@@ -14,7 +14,7 @@ function StatCard({
 }) {
   return (
     <div
-      className={`flex min-w-[150px] flex-1 flex-col rounded-xl border-2 px-4 py-2.5 ${
+      className={`flex min-w-[110px] flex-1 flex-col rounded-xl border-2 px-3 py-2 sm:min-w-[150px] sm:px-4 sm:py-2.5 ${
         accent
           ? "border-base-blue bg-blue-50"
           : "border-blue-100 bg-white"
@@ -23,7 +23,7 @@ function StatCard({
       <span className="text-[11px] font-semibold uppercase tracking-wider text-base-light">
         {label}
       </span>
-      <span className="text-xl font-black tabular-nums text-base-blue sm:text-2xl">
+      <span className="text-lg font-black tabular-nums text-base-blue sm:text-xl md:text-2xl">
         {value}
       </span>
     </div>

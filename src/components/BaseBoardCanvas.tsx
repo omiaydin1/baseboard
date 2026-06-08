@@ -78,6 +78,19 @@ export function BaseBoardCanvas() {
   });
   const hoverCellRef = useRef<{ x: number; y: number } | null>(null);
 
+  // Touch state for multi-touch gestures (mobile: 1-finger pan, 2-finger pinch).
+  const touchRef = useRef({
+    active: 0,
+    lastX: 0,
+    lastY: 0,
+    startX: 0,
+    startY: 0,
+    moved: false,
+    lastDist: 0,
+    lastMidX: 0,
+    lastMidY: 0,
+  });
+
   // Loaded plot data for the current viewport + image cache.
   const plotMapRef = useRef<Map<number, Plot>>(new Map());
   const imageCacheRef = useRef<Map<string, HTMLImageElement | "error">>(
@@ -657,6 +670,107 @@ export function BaseBoardCanvas() {
   );
 
   // -------------------------------------------------------------------
+  // Touch gestures (mobile: single-finger pan, pinch-to-zoom, tap to select)
+  // -------------------------------------------------------------------
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      const t = touchRef.current;
+      t.active = e.touches.length;
+      const rect = canvas.getBoundingClientRect();
+      if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        t.lastX = touch.clientX - rect.left;
+        t.lastY = touch.clientY - rect.top;
+        t.startX = t.lastX;
+        t.startY = t.lastY;
+        t.moved = false;
+      } else if (e.touches.length === 2) {
+        const [a, b] = [e.touches[0], e.touches[1]];
+        t.lastDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        t.lastMidX = (a.clientX + b.clientX) / 2 - rect.left;
+        t.lastMidY = (a.clientY + b.clientY) / 2 - rect.top;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      const t = touchRef.current;
+      const rect = canvas.getBoundingClientRect();
+      if (e.touches.length === 1 && t.active === 1) {
+        const touch = e.touches[0];
+        const sx = touch.clientX - rect.left;
+        const sy = touch.clientY - rect.top;
+        if (!t.moved && Math.hypot(sx - t.startX, sy - t.startY) > DRAG_THRESHOLD) {
+          t.moved = true;
+        }
+        if (t.moved) {
+          const cam = cameraRef.current;
+          cam.camX -= (sx - t.lastX) / cam.scale;
+          cam.camY -= (sy - t.lastY) / cam.scale;
+          clampCamera();
+          dirtyRef.current = true;
+          scheduleLoad();
+        }
+        t.lastX = sx;
+        t.lastY = sy;
+      } else if (e.touches.length === 2) {
+        const [a, b] = [e.touches[0], e.touches[1]];
+        const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        const midX = (a.clientX + b.clientX) / 2 - rect.left;
+        const midY = (a.clientY + b.clientY) / 2 - rect.top;
+        if (t.lastDist > 0) {
+          const cam = cameraRef.current;
+          const factor = dist / t.lastDist;
+          const worldXBefore = cam.camX + midX / cam.scale;
+          const worldYBefore = cam.camY + midY / cam.scale;
+          const minScale = Math.max(MIN_SCALE_FLOOR, fitScale() * 0.5);
+          cam.scale = clamp(cam.scale * factor, minScale, MAX_SCALE);
+          cam.camX = worldXBefore - midX / cam.scale;
+          cam.camY = worldYBefore - midY / cam.scale;
+          clampCamera();
+          cam.camX -= (midX - t.lastMidX) / cam.scale;
+          cam.camY -= (midY - t.lastMidY) / cam.scale;
+          clampCamera();
+          setZoomLabel(cam.scale);
+          dirtyRef.current = true;
+          scheduleLoad();
+        }
+        t.lastDist = dist;
+        t.lastMidX = midX;
+        t.lastMidY = midY;
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      const t = touchRef.current;
+      if (t.active === 1 && !t.moved && e.changedTouches.length > 0) {
+        const cell = screenToCell(t.lastX, t.lastY);
+        if (cell.x >= 0 && cell.x < GRID_SIZE && cell.y >= 0 && cell.y < GRID_SIZE) {
+          handleSingleSelect(cell.x, cell.y);
+        }
+      }
+      t.active = e.touches.length;
+      if (e.touches.length === 0) t.lastDist = 0;
+    };
+
+    canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+    canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+    canvas.addEventListener("touchend", onTouchEnd, { passive: false });
+    canvas.addEventListener("touchcancel", onTouchEnd, { passive: false });
+    return () => {
+      canvas.removeEventListener("touchstart", onTouchStart);
+      canvas.removeEventListener("touchmove", onTouchMove);
+      canvas.removeEventListener("touchend", onTouchEnd);
+      canvas.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [clampCamera, fitScale, handleSingleSelect, scheduleLoad, screenToCell]);
+
+  // -------------------------------------------------------------------
   // Zoom buttons / recenter
   // -------------------------------------------------------------------
   const zoomBy = useCallback(
@@ -700,7 +814,7 @@ export function BaseBoardCanvas() {
     <div ref={containerRef} className="relative h-full w-full overflow-hidden">
       <canvas
         ref={canvasRef}
-        className={`baseboard-canvas absolute inset-0 ${cursorClass}`}
+        className={`baseboard-canvas absolute inset-0 touch-none ${cursorClass}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
