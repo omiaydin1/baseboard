@@ -18,6 +18,9 @@ export const metadata: Metadata = {
   title: "BaseBoard · 10,000,000 plots on Base",
   description:
     "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+  other: {
+    "base:app_id": "6a29aec065478aa1565a99bb",
+  },
 };
 
 export const viewport: Viewport = {
