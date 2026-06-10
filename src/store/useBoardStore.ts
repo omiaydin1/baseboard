@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { BBox } from "@/lib/coords";
+import type { Plot } from "@/lib/types";
 
 interface BoardUIState {
   /** Profile drawer open/closed. */
@@ -17,6 +18,29 @@ interface BoardUIState {
   setBuySelection: (box: BBox | null) => void;
   clearBuySelection: () => void;
 
+  /** Explicit plot-id list to buy (from the tap-to-add basket) — opens buy modal. */
+  directBuyIds: number[] | null;
+  setDirectBuyIds: (ids: number[] | null) => void;
+
+  /** Tap-to-add multi-select ("basket") mode for touch screens. */
+  selectMode: boolean;
+  setSelectMode: (on: boolean) => void;
+  toggleSelectMode: () => void;
+
+  /** Plot ids queued in the basket while in select mode. */
+  basket: number[];
+  toggleBasketPlot: (id: number) => void;
+  clearBasket: () => void;
+
+  /**
+   * Optimistic plot overrides merged on top of freshly-read on-chain data so
+   * the board reflects a buy/sell/image change instantly after a tx confirms,
+   * without waiting for the next poll. Replaced by real reads when they land.
+   */
+  optimisticPlots: Record<number, Plot>;
+  applyOptimisticPlots: (plots: Record<number, Plot>) => void;
+  clearOptimisticPlots: () => void;
+
   /** Monotonic counter bumped after a tx settles to force data refetches. */
   refreshNonce: number;
   bumpRefresh: () => void;
@@ -32,12 +56,37 @@ export const useBoardStore = create<BoardUIState>((set) => ({
   toggleProfile: () => set((s) => ({ profileOpen: !s.profileOpen })),
 
   activePlotId: null,
-  openPlot: (id) => set({ activePlotId: id, buySelection: null }),
+  openPlot: (id) =>
+    set({ activePlotId: id, buySelection: null, directBuyIds: null }),
   closePlot: () => set({ activePlotId: null }),
 
   buySelection: null,
-  setBuySelection: (box) => set({ buySelection: box, activePlotId: null }),
+  setBuySelection: (box) =>
+    set({ buySelection: box, directBuyIds: null, activePlotId: null }),
   clearBuySelection: () => set({ buySelection: null }),
+
+  directBuyIds: null,
+  setDirectBuyIds: (ids) =>
+    set({ directBuyIds: ids, buySelection: null, activePlotId: null }),
+
+  selectMode: false,
+  setSelectMode: (on) => set({ selectMode: on }),
+  toggleSelectMode: () =>
+    set((s) => ({ selectMode: !s.selectMode, basket: [] })),
+
+  basket: [],
+  toggleBasketPlot: (id) =>
+    set((s) =>
+      s.basket.includes(id)
+        ? { basket: s.basket.filter((b) => b !== id) }
+        : { basket: [...s.basket, id] },
+    ),
+  clearBasket: () => set({ basket: [] }),
+
+  optimisticPlots: {},
+  applyOptimisticPlots: (plots) =>
+    set((s) => ({ optimisticPlots: { ...s.optimisticPlots, ...plots } })),
+  clearOptimisticPlots: () => set({ optimisticPlots: {} }),
 
   refreshNonce: 0,
   bumpRefresh: () => set((s) => ({ refreshNonce: s.refreshNonce + 1 })),

@@ -50,6 +50,13 @@ export function BaseBoardCanvas() {
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
   const focusPlotId = useBoardStore((s) => s.focusPlotId);
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
+  const selectMode = useBoardStore((s) => s.selectMode);
+  const toggleSelectMode = useBoardStore((s) => s.toggleSelectMode);
+  const basket = useBoardStore((s) => s.basket);
+  const toggleBasketPlot = useBoardStore((s) => s.toggleBasketPlot);
+  const clearBasket = useBoardStore((s) => s.clearBasket);
+  const setDirectBuyIds = useBoardStore((s) => s.setDirectBuyIds);
+  const optimisticPlots = useBoardStore((s) => s.optimisticPlots);
 
   const [tool, setTool] = useState<Tool>("pan");
   const [zoomLabel, setZoomLabel] = useState(1);
@@ -63,6 +70,16 @@ export function BaseBoardCanvas() {
   const dirtyRef = useRef(true);
   const toolRef = useRef<Tool>(tool);
   toolRef.current = tool;
+
+  // Mirror basket / select-mode into refs so the imperative input + render
+  // paths can read them without re-subscribing every frame.
+  const selectModeRef = useRef(selectMode);
+  selectModeRef.current = selectMode;
+  const basketSetRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    basketSetRef.current = new Set(basket);
+    dirtyRef.current = true;
+  }, [basket]);
 
   const pointerRef = useRef({
     down: false,
@@ -86,6 +103,11 @@ export function BaseBoardCanvas() {
     startX: 0,
     startY: 0,
     moved: false,
+    // True once 2+ fingers ever touched during the current gesture — used to
+    // suppress the accidental "tap" that fires when a pinch/pan gesture ends.
+    multiTouch: false,
+    // True while a single-finger drag in Select tool is drawing a marquee box.
+    marquee: false,
     lastDist: 0,
     lastMidX: 0,
     lastMidY: 0,
@@ -213,6 +235,20 @@ export function BaseBoardCanvas() {
     // ---- Owned plots + stretched images (grouped by owner+uri) ----
     drawPlots(ctx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
 
+    // ---- Solid Base-blue outline marking the active grid boundary ----
+    // Always visible so the playable map is clearly separated from the white
+    // inner container, even when zoomed all the way out.
+    ctx.save();
+    ctx.strokeStyle = "#0052ff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(
+      boardLeft + 1.5,
+      boardTop + 1.5,
+      boardSize - 3,
+      boardSize - 3,
+    );
+    ctx.restore();
+
     // ---- Grid lines (fade in as we zoom in) ----
     const gridAlpha =
       cam.scale <= GRID_FADE_START
@@ -273,6 +309,25 @@ export function BaseBoardCanvas() {
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(rx, ry, rw, rh);
+      ctx.restore();
+    }
+
+    // ---- Basket (tap-to-add multi-select) highlights ----
+    const basketIds = basketSetRef.current;
+    if (basketIds.size > 0) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0,82,255,0.30)";
+      ctx.strokeStyle = "#0052ff";
+      ctx.lineWidth = Math.max(1, Math.min(3, cam.scale * 0.15));
+      basketIds.forEach((id) => {
+        const { x, y } = xyFromPlotId(id);
+        if (x < startX - 1 || x > endX + 1 || y < startY - 1 || y > endY + 1)
+          return;
+        const sx = cellToScreenX(x);
+        const sy = cellToScreenY(y);
+        ctx.fillRect(sx, sy, cam.scale, cam.scale);
+        if (cam.scale > 3) ctx.strokeRect(sx, sy, cam.scale, cam.scale);
+      });
       ctx.restore();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -473,12 +528,29 @@ export function BaseBoardCanvas() {
     loadTimerRef.current = setTimeout(() => void loadViewport(), 220);
   }, [loadViewport]);
 
-  // Reload when data is invalidated by a settled tx.
+  // Reload when data is invalidated by a settled tx. We re-read the visible
+  // viewport immediately (no debounce, no full clear) so ownership/status
+  // changes show up right after the receipt confirms instead of on the next
+  // poll. loadViewport self-corrects each cell (set if owned, delete if free).
   useEffect(() => {
-    plotMapRef.current.clear();
-    scheduleLoad();
+    void loadViewport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshNonce]);
+
+  // Merge optimistic overrides on top of loaded data for instant post-tx
+  // feedback (e.g. a just-bought plot turns "mine" before the re-read lands).
+  useEffect(() => {
+    const map = plotMapRef.current;
+    let changed = false;
+    Object.entries(optimisticPlots).forEach(([id, plot]) => {
+      map.set(Number(id), plot);
+      changed = true;
+    });
+    if (changed) {
+      dirtyRef.current = true;
+      forceTick((t) => t + 1);
+    }
+  }, [optimisticPlots]);
 
   // -------------------------------------------------------------------
   // Focus / fly-to a plot (from the profile list)
@@ -543,6 +615,10 @@ export function BaseBoardCanvas() {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      // Touch input is handled exclusively by the native touch listeners below
+      // (multi-touch + tap-suppression). Ignore touch/pen pointer events here
+      // so a pinch/pan never double-fires through the mouse code path.
+      if (e.pointerType !== "mouse") return;
       if (e.button !== 0) return;
       const canvas = canvasRef.current!;
       canvas.setPointerCapture(e.pointerId);
@@ -565,6 +641,7 @@ export function BaseBoardCanvas() {
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
       const { sx, sy } = getLocal(e);
       const cell = screenToCell(sx, sy);
 
@@ -619,6 +696,7 @@ export function BaseBoardCanvas() {
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
       const canvas = canvasRef.current!;
       if (canvas.hasPointerCapture(e.pointerId))
         canvas.releasePointerCapture(e.pointerId);
@@ -660,17 +738,34 @@ export function BaseBoardCanvas() {
     (x: number, y: number) => {
       const id = plotIdFromXY(x, y);
       const plot = plotMapRef.current.get(id);
-      if (plot && plot.owner.toLowerCase() !== ZERO_ADDRESS) {
+      const owned = !!plot && plot.owner.toLowerCase() !== ZERO_ADDRESS;
+
+      // Basket mode: tapping queues/un-queues unowned plots for a bulk buy.
+      if (selectModeRef.current) {
+        if (owned) {
+          openPlot(id); // owned plots can't be basket-bought — inspect instead
+        } else {
+          toggleBasketPlot(id);
+        }
+        return;
+      }
+
+      if (owned) {
         openPlot(id); // existing plot -> detail modal
       } else {
         setBuySelection({ x1: x, y1: y, x2: x, y2: y }); // empty -> buy
       }
     },
-    [openPlot, setBuySelection],
+    [openPlot, setBuySelection, toggleBasketPlot],
   );
 
   // -------------------------------------------------------------------
-  // Touch gestures (mobile: single-finger pan, pinch-to-zoom, tap to select)
+  // Touch gestures (mobile):
+  //   • 1-finger drag  → pan (Pan tool) or marquee box (Select tool)
+  //   • 2-finger drag  → pinch-zoom toward the midpoint
+  //   • clean 1-finger tap → select / add-to-basket
+  // A gesture that ever involved 2 fingers, or that moved past the drag
+  // threshold, is flagged so its end NEVER triggers an accidental cell tap.
   // -------------------------------------------------------------------
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -679,41 +774,81 @@ export function BaseBoardCanvas() {
     const onTouchStart = (e: TouchEvent) => {
       e.preventDefault();
       const t = touchRef.current;
+      const p = pointerRef.current;
+      const prev = t.active;
       t.active = e.touches.length;
       const rect = canvas.getBoundingClientRect();
+
+      if (prev === 0) {
+        // Brand-new gesture: reset all per-gesture flags.
+        t.multiTouch = e.touches.length >= 2;
+        t.moved = false;
+        t.marquee = false;
+        p.marquee = false;
+      }
+      if (e.touches.length >= 2) {
+        // A second finger landed — this is a pinch, not a tap/marquee.
+        t.multiTouch = true;
+        t.marquee = false;
+        p.marquee = false;
+      }
+
       if (e.touches.length === 1) {
         const touch = e.touches[0];
         t.lastX = touch.clientX - rect.left;
         t.lastY = touch.clientY - rect.top;
         t.startX = t.lastX;
         t.startY = t.lastY;
-        t.moved = false;
+        const cell = screenToCell(t.lastX, t.lastY);
+        p.startCell = cell;
+        p.curCell = cell;
       } else if (e.touches.length === 2) {
         const [a, b] = [e.touches[0], e.touches[1]];
         t.lastDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         t.lastMidX = (a.clientX + b.clientX) / 2 - rect.left;
         t.lastMidY = (a.clientY + b.clientY) / 2 - rect.top;
       }
+      dirtyRef.current = true;
     };
 
     const onTouchMove = (e: TouchEvent) => {
       e.preventDefault();
       const t = touchRef.current;
+      const p = pointerRef.current;
       const rect = canvas.getBoundingClientRect();
-      if (e.touches.length === 1 && t.active === 1) {
+
+      if (e.touches.length === 1 && !t.multiTouch) {
         const touch = e.touches[0];
         const sx = touch.clientX - rect.left;
         const sy = touch.clientY - rect.top;
-        if (!t.moved && Math.hypot(sx - t.startX, sy - t.startY) > DRAG_THRESHOLD) {
+        if (
+          !t.moved &&
+          Math.hypot(sx - t.startX, sy - t.startY) > DRAG_THRESHOLD
+        ) {
           t.moved = true;
+          // In Select tool a single-finger drag draws a marquee box.
+          if (toolRef.current === "select") {
+            t.marquee = true;
+            p.marquee = true;
+            p.startCell = screenToCell(t.startX, t.startY);
+          }
         }
         if (t.moved) {
-          const cam = cameraRef.current;
-          cam.camX -= (sx - t.lastX) / cam.scale;
-          cam.camY -= (sy - t.lastY) / cam.scale;
-          clampCamera();
-          dirtyRef.current = true;
-          scheduleLoad();
+          if (t.marquee) {
+            const cell = screenToCell(sx, sy);
+            p.curCell = {
+              x: clamp(cell.x, 0, GRID_SIZE - 1),
+              y: clamp(cell.y, 0, GRID_SIZE - 1),
+            };
+            dirtyRef.current = true;
+          } else {
+            const cam = cameraRef.current;
+            cam.camX -= (sx - t.lastX) / cam.scale;
+            cam.camY -= (sy - t.lastY) / cam.scale;
+            clampCamera();
+            dirtyRef.current = true;
+            scheduleLoad();
+          }
         }
         t.lastX = sx;
         t.lastY = sy;
@@ -748,14 +883,37 @@ export function BaseBoardCanvas() {
     const onTouchEnd = (e: TouchEvent) => {
       e.preventDefault();
       const t = touchRef.current;
-      if (t.active === 1 && !t.moved && e.changedTouches.length > 0) {
-        const cell = screenToCell(t.lastX, t.lastY);
-        if (cell.x >= 0 && cell.x < GRID_SIZE && cell.y >= 0 && cell.y < GRID_SIZE) {
-          handleSingleSelect(cell.x, cell.y);
+      const p = pointerRef.current;
+
+      // Only resolve the gesture once every finger has lifted.
+      if (e.touches.length === 0) {
+        if (t.marquee && !t.multiTouch) {
+          const x1 = clamp(Math.min(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
+          const y1 = clamp(Math.min(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
+          const x2 = clamp(Math.max(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
+          const y2 = clamp(Math.max(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
+          setBuySelection({ x1, y1, x2, y2 });
+        } else if (!t.multiTouch && !t.moved) {
+          // Clean, intentional single-finger tap.
+          const cell = screenToCell(t.lastX, t.lastY);
+          if (
+            cell.x >= 0 &&
+            cell.x < GRID_SIZE &&
+            cell.y >= 0 &&
+            cell.y < GRID_SIZE
+          ) {
+            handleSingleSelect(cell.x, cell.y);
+          }
         }
+        // Reset all per-gesture state for the next interaction.
+        t.lastDist = 0;
+        t.multiTouch = false;
+        t.moved = false;
+        t.marquee = false;
+        p.marquee = false;
+        dirtyRef.current = true;
       }
       t.active = e.touches.length;
-      if (e.touches.length === 0) t.lastDist = 0;
     };
 
     canvas.addEventListener("touchstart", onTouchStart, { passive: false });
@@ -768,7 +926,14 @@ export function BaseBoardCanvas() {
       canvas.removeEventListener("touchend", onTouchEnd);
       canvas.removeEventListener("touchcancel", onTouchEnd);
     };
-  }, [clampCamera, fitScale, handleSingleSelect, scheduleLoad, screenToCell]);
+  }, [
+    clampCamera,
+    fitScale,
+    handleSingleSelect,
+    scheduleLoad,
+    screenToCell,
+    setBuySelection,
+  ]);
 
   // -------------------------------------------------------------------
   // Zoom buttons / recenter
@@ -840,11 +1005,21 @@ export function BaseBoardCanvas() {
           <button
             type="button"
             onClick={() => setTool("select")}
-            className={`px-3 py-1.5 text-sm font-semibold ${
+            className={`border-l-2 border-base-blue px-3 py-1.5 text-sm font-semibold ${
               tool === "select" ? "bg-base-blue text-white" : "text-base-blue"
             }`}
           >
             ▭ Select
+          </button>
+          <button
+            type="button"
+            onClick={toggleSelectMode}
+            title="Tap plots one-by-one to add them to a buy basket"
+            className={`border-l-2 border-base-blue px-3 py-1.5 text-sm font-semibold ${
+              selectMode ? "bg-base-blue text-white" : "text-base-blue"
+            }`}
+          >
+            ＋ Multi
           </button>
         </div>
         <div className="flex w-fit overflow-hidden rounded-xl border-2 border-base-blue bg-white shadow">
@@ -884,6 +1059,31 @@ export function BaseBoardCanvas() {
       <div className="pointer-events-none absolute bottom-3 right-3 hidden rounded-lg bg-white/90 px-3 py-1.5 text-xs font-medium text-base-blue shadow sm:block">
         Scroll = zoom · Drag = {tool === "pan" ? "pan" : "select"} · Click = inspect/buy
       </div>
+
+      {/* Basket action bar (tap-to-add multi-select) */}
+      {(selectMode || basket.length > 0) && (
+        <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-2xl border-2 border-base-blue bg-white px-3 py-2 shadow-lg">
+          <span className="whitespace-nowrap text-sm font-bold text-base-blue">
+            🧺 {basket.length} selected
+          </span>
+          <button
+            type="button"
+            disabled={basket.length === 0}
+            onClick={() => setDirectBuyIds(basket)}
+            className="rounded-lg bg-base-blue px-3 py-1.5 text-sm font-bold text-white hover:bg-base-dark disabled:opacity-50"
+          >
+            Buy Selected
+          </button>
+          <button
+            type="button"
+            disabled={basket.length === 0}
+            onClick={clearBasket}
+            className="rounded-lg border-2 border-base-blue px-2.5 py-1.5 text-sm font-semibold text-base-blue disabled:opacity-40"
+          >
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   );
 }

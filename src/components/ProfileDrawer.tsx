@@ -12,6 +12,29 @@ import { IS_CONTRACT_CONFIGURED } from "@/lib/constants";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
 import type { Plot } from "@/lib/types";
 
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
+const MAX_IMAGE_BYTES = 60 * 1024; // on-chain storage is costly — keep files tiny
+
+/** Validate an image reference (data URI, ipfs://, or a direct image URL). */
+function validateImageRef(ref: string): string | null {
+  const v = ref.trim();
+  if (!v) return "Add an image URL or choose a file";
+  if (v.startsWith("data:image/")) return null;
+  if (v.startsWith("ipfs://")) return null;
+  if (!/^https?:\/\//i.test(v))
+    return "Must start with https://, http:// or ipfs://";
+  if (!IMAGE_EXT.test(v))
+    return "URL must end in .png, .jpg, .jpeg, .webp or .gif";
+  return null;
+}
+
+/** Resolve ipfs:// for an <img> preview. */
+function previewSrc(ref: string): string {
+  if (ref.startsWith("ipfs://"))
+    return `https://ipfs.io/ipfs/${ref.slice("ipfs://".length)}`;
+  return ref;
+}
+
 export function ProfileDrawer() {
   const profileOpen = useBoardStore((s) => s.profileOpen);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
@@ -69,30 +92,50 @@ export function ProfileDrawer() {
           profileOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <header className="flex items-center justify-between border-b-2 border-blue-100 px-5 py-4">
-          <div>
-            <h2 className="text-xl font-black text-base-blue">My Profile</h2>
-            {isConnected && (
-              <p className="font-mono text-xs text-slate-500">
-                {shortAddress(address)}
-              </p>
-            )}
-          </div>
+        <header className="border-b-2 border-blue-100 px-5 py-4">
+          {/* Back navigation — clear way to return to the board map */}
           <button
             type="button"
             onClick={() => setProfileOpen(false)}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
-            aria-label="close profile"
+            className="mb-3 inline-flex items-center gap-1.5 rounded-lg border-2 border-base-blue px-3 py-1.5 text-sm font-semibold text-base-blue hover:bg-blue-50"
           >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
               <path
-                d="M6 6l12 12M18 6L6 18"
+                d="M15 18l-6-6 6-6"
                 stroke="currentColor"
-                strokeWidth="2"
+                strokeWidth="2.2"
                 strokeLinecap="round"
+                strokeLinejoin="round"
               />
             </svg>
+            Back to Board
           </button>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-black text-base-blue">My Profile</h2>
+              {isConnected && (
+                <p className="font-mono text-xs text-slate-500">
+                  {shortAddress(address)}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setProfileOpen(false)}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
+              aria-label="close profile"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M6 6l12 12M18 6L6 18"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </div>
         </header>
 
         <div className="thin-scrollbar flex-1 overflow-y-auto p-4">
@@ -145,7 +188,29 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
   const [action, setAction] = useState<Action>("none");
   const [priceInput, setPriceInput] = useState("");
   const [imageInput, setImageInput] = useState(plot?.imageUri ?? "");
+  const [imageError, setImageError] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  // Read a chosen device image (camera/gallery on mobile) into a data URI.
+  const onPickFile = (file: File | undefined) => {
+    setImageError(null);
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setImageError("Please choose an image file");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setImageError(
+        "Image is over 60 KB — host it somewhere and paste the URL instead (on-chain storage is expensive).",
+      );
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () =>
+      setImageInput(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => setImageError("Could not read that file");
+    reader.readAsDataURL(file);
+  };
 
   const busy = status === "pending" || status === "confirming";
 
@@ -206,15 +271,22 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
       }),
     );
 
-  const onImage = () =>
-    run(() =>
+  const onImage = () => {
+    const err = validateImageRef(imageInput);
+    if (err) {
+      setImageError(err);
+      return;
+    }
+    setImageError(null);
+    return run(() =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
-        args: [BigInt(plotId), imageInput],
+        args: [BigInt(plotId), imageInput.trim()],
       }),
     );
+  };
 
   return (
     <div className="rounded-xl border-2 border-blue-100 p-3">
@@ -302,22 +374,61 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
       )}
 
       {action === "image" && (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 space-y-2">
+          {/* Mobile camera / gallery upload */}
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-slate-500">
+              Upload from device (camera / gallery)
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => onPickFile(e.target.files?.[0])}
+              className="block w-full cursor-pointer rounded-lg border-2 border-blue-100 text-xs file:mr-3 file:cursor-pointer file:border-0 file:bg-base-blue file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-white"
+            />
+          </label>
+
+          <div className="flex items-center gap-2">
+            <span className="h-px flex-1 bg-blue-100" />
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              or paste a URL
+            </span>
+            <span className="h-px flex-1 bg-blue-100" />
+          </div>
+
           <input
             type="text"
-            value={imageInput}
-            onChange={(e) => setImageInput(e.target.value)}
-            placeholder="https://… or ipfs://CID"
+            value={imageInput.startsWith("data:") ? "" : imageInput}
+            onChange={(e) => {
+              setImageInput(e.target.value);
+              setImageError(null);
+            }}
+            placeholder="https://….png · .jpg · .webp · .gif · ipfs://CID"
             className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
           />
+
+          {imageInput && !imageError && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={previewSrc(imageInput)}
+              alt="preview"
+              className="h-24 w-full rounded-lg border border-blue-100 object-cover"
+              onError={() => setImageError("That image could not be loaded")}
+            />
+          )}
+
+          {imageError && (
+            <p className="break-words text-xs text-red-600">{imageError}</p>
+          )}
+
           <button
             type="button"
             onClick={onImage}
             disabled={busy}
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-base-blue px-3 py-1.5 text-sm font-bold text-white hover:bg-base-dark disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-1 whitespace-nowrap rounded-lg bg-base-blue px-3 py-1.5 text-sm font-bold text-white hover:bg-base-dark disabled:opacity-50"
           >
             {busy && <Spinner size={14} className="!border-white/40 !border-t-white" />}
-            Save
+            Save Image
           </button>
         </div>
       )}

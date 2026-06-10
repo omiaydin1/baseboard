@@ -14,12 +14,11 @@ import {
   ZERO_ADDRESS,
 } from "@/lib/constants";
 import {
-  bboxPlotCount,
   bboxToPlotIds,
   normalizeBBox,
-  plotIdFromXY,
   totalPriceEth,
   totalPriceWei,
+  xyFromPlotId,
 } from "@/lib/coords";
 import type { Plot } from "@/lib/types";
 
@@ -28,7 +27,12 @@ const MAX_BUY = 400;
 export function BuyModal() {
   const buySelection = useBoardStore((s) => s.buySelection);
   const clearBuySelection = useBoardStore((s) => s.clearBuySelection);
-  const { isConnected } = useAccount();
+  const directBuyIds = useBoardStore((s) => s.directBuyIds);
+  const setDirectBuyIds = useBoardStore((s) => s.setDirectBuyIds);
+  const clearBasket = useBoardStore((s) => s.clearBasket);
+  const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
+  const clearOptimisticPlots = useBoardStore((s) => s.clearOptimisticPlots);
+  const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
   const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
 
@@ -36,22 +40,31 @@ export function BuyModal() {
   const [checking, setChecking] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
 
-  const open = buySelection != null;
+  const open = buySelection != null || directBuyIds != null;
   const box = useMemo(
     () => (buySelection ? normalizeBBox(buySelection) : null),
     [buySelection],
   );
-  const totalCount = box ? bboxPlotCount(box) : 0;
+
+  // Unified list of selected plot ids — from a marquee box or the tap basket.
+  const selectedIds = useMemo(() => {
+    if (directBuyIds) return Array.from(new Set(directBuyIds));
+    if (box) return bboxToPlotIds(box);
+    return [];
+  }, [directBuyIds, box]);
+
+  const totalCount = selectedIds.length;
   const tooLarge = totalCount > MAX_BUY;
   const isSingle = totalCount === 1;
+  const idsKey = selectedIds.join(",");
 
   // Determine which selected plots are actually unowned (buyable).
   useEffect(() => {
     setBuyableIds(null);
     setTxError(null);
     reset();
-    if (!open || !box || tooLarge) return;
-    const ids = bboxToPlotIds(box);
+    if (!open || selectedIds.length === 0 || tooLarge) return;
+    const ids = selectedIds;
 
     if (!IS_CONTRACT_CONFIGURED || !publicClient) {
       setBuyableIds(ids); // demo mode: treat all as buyable
@@ -83,7 +96,7 @@ export function BuyModal() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, box?.x1, box?.y1, box?.x2, box?.y2, tooLarge]);
+  }, [open, idsKey, tooLarge]);
 
   const buyCount = buyableIds?.length ?? 0;
 
@@ -103,10 +116,31 @@ export function BuyModal() {
     }
   };
 
+  // Optimistically flip just-bought plots to "mine" the moment the tx confirms
+  // so the board updates instantly instead of waiting for the next poll.
+  useEffect(() => {
+    if (status !== "success" || !address || !buyableIds || buyableIds.length === 0)
+      return;
+    const overrides: Record<number, Plot> = {};
+    for (const id of buyableIds) {
+      overrides[id] = {
+        owner: address,
+        price: 0n,
+        isForSale: false,
+        imageUri: "",
+      };
+    }
+    applyOptimisticPlots(overrides);
+    clearBasket();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
   const close = () => {
     reset();
     setTxError(null);
     clearBuySelection();
+    setDirectBuyIds(null);
+    clearOptimisticPlots();
   };
 
   const busy = status === "pending" || status === "confirming";
@@ -117,16 +151,21 @@ export function BuyModal() {
       onClose={close}
       title={isSingle ? "Buy Plot" : "Buy Plots"}
     >
-      {box && (
+      {open && (
         <div className="space-y-4">
           <div className="rounded-xl bg-blue-50 p-3 text-sm">
             {isSingle ? (
               <p className="font-semibold text-base-blue">
-                Plot ({box.x1}, {box.y1}) · id #{plotIdFromXY(box.x1, box.y1)}
+                Plot ({xyFromPlotId(selectedIds[0]).x},{" "}
+                {xyFromPlotId(selectedIds[0]).y}) · id #{selectedIds[0]}
+              </p>
+            ) : box ? (
+              <p className="font-semibold text-base-blue">
+                Region ({box.x1}, {box.y1}) → ({box.x2}, {box.y2})
               </p>
             ) : (
               <p className="font-semibold text-base-blue">
-                Region ({box.x1}, {box.y1}) → ({box.x2}, {box.y2})
+                Basket selection · {totalCount.toLocaleString()} plots
               </p>
             )}
             <p className="mt-1 text-slate-600">
