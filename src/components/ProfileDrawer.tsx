@@ -65,12 +65,6 @@ type MinimalPublicClient = {
 /**
  * Validate an `updatePlotImage` call *before* it reaches the wallet.
  * Only checks size and on-chain ownership — no gas simulation.
- *
- * Why no simulateContract: Coinbase Smart Wallet uses a paymaster to sponsor
- * gas, so eth_estimateGas fails with "estimate gas" for accounts that hold no
- * ETH on Base, even when the transaction is perfectly valid. Skipping the
- * simulation avoids this false-positive while still catching the two real
- * pre-conditions: image too large and caller no longer owns the plot.
  */
 async function preflightImageUpdate(
   publicClient: MinimalPublicClient | null | undefined,
@@ -83,7 +77,6 @@ async function preflightImageUpdate(
   if (!v) return "Add an image before saving";
   if (v.length > MAX_ONCHAIN_IMAGE_BYTES)
     return "Image is too large to store on-chain — try a simpler one";
-  // Without a public client we can't preflight; let the wallet handle it.
   if (!publicClient) return null;
   try {
     const plot = (await publicClient.readContract({
@@ -110,15 +103,12 @@ export function ProfileDrawer() {
   const { ids, isLoading } = usePlotsByOwner(address);
 
   const [details, setDetails] = useState<Record<number, Plot>>({});
-
-  // Multi-select: apply one image across several owned plots in one tx.
   const [multiMode, setMultiMode] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
 
   const toggleSelected = (id: number) =>
     setSelected((s) => (s.includes(id) ? s.filter((i) => i !== id) : [...s, id]));
 
-  // Reset multi-select whenever the drawer closes or the wallet changes.
   useEffect(() => {
     if (!profileOpen) {
       setMultiMode(false);
@@ -126,7 +116,6 @@ export function ProfileDrawer() {
     }
   }, [profileOpen]);
 
-  // Fetch details for owned plots in one batch.
   useEffect(() => {
     if (!IS_CONTRACT_CONFIGURED || !publicClient || ids.length === 0) {
       setDetails({});
@@ -154,12 +143,10 @@ export function ProfileDrawer() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ids.join(","), refreshNonce]);
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className={`fixed inset-0 z-40 bg-slate-900/30 transition-opacity ${
           profileOpen ? "opacity-100" : "pointer-events-none opacity-0"
@@ -167,14 +154,12 @@ export function ProfileDrawer() {
         onClick={() => setProfileOpen(false)}
       />
 
-      {/* Drawer */}
       <aside
         className={`fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l-4 border-base-blue bg-white shadow-2xl transition-transform duration-300 ${
           profileOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >
         <header className="border-b-2 border-blue-100 px-5 py-4">
-          {/* Back navigation — clear way to return to the board map */}
           <button
             type="button"
             onClick={() => setProfileOpen(false)}
@@ -287,7 +272,6 @@ export function ProfileDrawer() {
           )}
         </div>
 
-        {/* Multi-plot image panel pinned to the bottom while selecting. */}
         {multiMode && selected.length > 0 && (
           <MultiImagePanel
             selected={selected}
@@ -332,7 +316,6 @@ function OwnedPlotRow({
 
   const busy = status === "pending" || status === "confirming";
 
-  // Toast + close the form once a submitted tx is mined.
   useEffect(() => {
     if (isSuccess && pendingLabel) {
       pushToast("success", `${pendingLabel} confirmed`);
@@ -414,17 +397,18 @@ function OwnedPlotRow({
       pushToast("error", problem);
       return;
     }
+    // FIX: Manual gas limit added here to override failing wallet estimation
     await submit("Image update", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
         args: [BigInt(plotId), uri.trim()],
+        gas: 300000n,
       }),
     );
   };
 
-  // In multi-select mode the whole row becomes a selection toggle.
   if (selectable) {
     return (
       <button
@@ -454,7 +438,6 @@ function OwnedPlotRow({
           )}
         </span>
         {plot?.imageUri ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={previewSrc(plot.imageUri)}
             alt=""
@@ -503,7 +486,6 @@ function OwnedPlotRow({
       </div>
 
       {plot?.imageUri && (
-        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={previewSrc(plot.imageUri)}
           alt="plot"
@@ -511,7 +493,6 @@ function OwnedPlotRow({
         />
       )}
 
-      {/* Action buttons */}
       <div className="mt-3 flex flex-wrap gap-2">
         {!plot?.isForSale ? (
           <ActionButton
@@ -541,7 +522,6 @@ function OwnedPlotRow({
         </ActionButton>
       </div>
 
-      {/* Inline price form */}
       {(action === "list" || action === "price") && (
         <div className="mt-3 flex gap-2">
           <input
@@ -563,7 +543,6 @@ function OwnedPlotRow({
         </div>
       )}
 
-      {/* Inline image form */}
       {action === "image" && (
         <div className="mt-3">
           <ImageUploader
@@ -589,7 +568,6 @@ function OwnedPlotRow({
   );
 }
 
-/** Bottom panel that applies a single image across several selected plots. */
 function MultiImagePanel({
   selected,
   onDone,
@@ -615,8 +593,6 @@ function MultiImagePanel({
     };
   }, [selected]);
 
-  // Anchor = smallest plot id among the selection (top-most, then left-most) —
-  // guaranteed to be owned by the user, so updatePlotImage will pass.
   const anchorId = useMemo(() => Math.min(...selected), [selected]);
 
   useEffect(() => {
@@ -625,7 +601,6 @@ function MultiImagePanel({
       setPending(false);
       onDone();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccess]);
 
   const onApply = async (uri: string) => {
@@ -642,11 +617,13 @@ function MultiImagePanel({
     }
     setPending(true);
     try {
+      // FIX: Manual gas limit added here too for multi-selection tool
       await writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
         args: [BigInt(anchorId), finalUri],
+        gas: 500000n,
       });
       pushToast("info", "Image submitted — waiting for confirmation…");
     } catch (e) {
@@ -671,11 +648,6 @@ function MultiImagePanel({
   );
 }
 
-/**
- * Self-contained image picker: device upload (auto-compressed for on-chain
- * storage) or a pasted URL, with live preview, validation and a Save button
- * that only enables once a valid image is ready.
- */
 function ImageUploader({
   initialValue = "",
   busy,
@@ -687,12 +659,6 @@ function ImageUploader({
   busy: boolean;
   onSave: (uri: string) => void | Promise<void>;
   saveLabel?: string;
-  /**
-   * Target width/height of the destination area. When set (e.g. a multi-plot
-   * zone) the uploaded image is cover-fit compressed to that exact shape and
-   * the preview is rendered at the same ratio, so the user sees ONE image
-   * exactly as it will appear across the whole zone.
-   */
   aspect?: number;
 }) {
   const [value, setValue] = useState(initialValue);
@@ -705,7 +671,7 @@ function ImageUploader({
   const onPickFile = async (file: File | undefined, input: HTMLInputElement) => {
     setError(null);
     setInfo(null);
-    input.value = ""; // allow re-picking the same file
+    input.value = "";
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       setError("Please choose an image file");
@@ -748,7 +714,6 @@ function ImageUploader({
 
   return (
     <div className="space-y-2.5">
-      {/* Device upload (camera / gallery on mobile) */}
       <label className="group flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 px-3 py-4 text-center transition hover:border-base-blue hover:bg-blue-50">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
           <path
@@ -793,7 +758,6 @@ function ImageUploader({
         className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
       />
 
-      {/* Live status */}
       {compressing && (
         <p className="flex items-center gap-2 text-xs font-medium text-slate-500">
           <Spinner size={13} /> Optimizing image…
@@ -803,9 +767,7 @@ function ImageUploader({
         <p className="text-xs font-semibold text-green-600">{info}</p>
       )}
 
-      {/* Preview */}
       {value && !error && !compressing && (
-        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={previewSrc(value)}
           alt="preview"
