@@ -8,6 +8,7 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
+import { base } from "viem/chains";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import {
   ACTIVE_CHAIN_ID,
@@ -145,7 +146,7 @@ export function useBaseBoardWrite() {
         );
       }
       return writeContractAsync(
-        { ...variables, chainId: ACTIVE_CHAIN_ID },
+        { ...variables, chainId: ACTIVE_CHAIN_ID, chain: base },
         options,
       );
     }) as WriteAsync,
