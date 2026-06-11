@@ -25,6 +25,17 @@ export const TARGET_CHAIN = base;
 export const TARGET_CHAIN_ID = base.id; // 8453
 
 /**
+ * Dev-only local-chain mode. When `NEXT_PUBLIC_DEV_LOCAL=1` the app points at a
+ * local Hardhat node (chain 31337) so the full wallet/upload flow can be tested
+ * without spending real ETH. It is a complete no-op in production.
+ */
+export const DEV_LOCAL = process.env.NEXT_PUBLIC_DEV_LOCAL === "1";
+export const LOCAL_CHAIN_ID = 31337;
+
+/** Chain id the app actively targets (local node in dev-local mode). */
+export const ACTIVE_CHAIN_ID = DEV_LOCAL ? LOCAL_CHAIN_ID : TARGET_CHAIN_ID;
+
+/**
  * Deployed BaseBoard contract address. Configure via
  * `NEXT_PUBLIC_BASEBOARD_CONTRACT_ADDRESS`. Falls back to the zero address,
  * in which case the UI runs in "not deployed" mode (reads are skipped).

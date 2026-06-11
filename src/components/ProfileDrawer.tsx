@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import { useAccount, usePublicClient } from "wagmi";
 import { Spinner } from "./Spinner";
@@ -10,16 +10,25 @@ import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import { IS_CONTRACT_CONFIGURED } from "@/lib/constants";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
+import {
+  MAX_ONCHAIN_IMAGE_BYTES,
+  compressImageFile,
+  withZone,
+  type Zone,
+} from "@/lib/image";
 import type { Plot } from "@/lib/types";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
-const MAX_IMAGE_BYTES = 60 * 1024; // on-chain storage is costly — keep files tiny
 
 /** Validate an image reference (data URI, ipfs://, or a direct image URL). */
 function validateImageRef(ref: string): string | null {
   const v = ref.trim();
-  if (!v) return "Add an image URL or choose a file";
-  if (v.startsWith("data:image/")) return null;
+  if (!v) return "Add an image — choose a file or paste a URL";
+  if (v.startsWith("data:image/")) {
+    if (v.length > MAX_ONCHAIN_IMAGE_BYTES)
+      return "Image is too large to store on-chain";
+    return null;
+  }
   if (v.startsWith("ipfs://")) return null;
   if (!/^https?:\/\//i.test(v))
     return "Must start with https://, http:// or ipfs://";
@@ -35,6 +44,16 @@ function previewSrc(ref: string): string {
   return ref;
 }
 
+/** Turn a raw wallet/tx error into a short, human message. */
+function friendlyTxError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/user rejected|rejected the request|user denied|denied/i.test(msg))
+    return "Transaction cancelled in your wallet";
+  if (/insufficient funds|insufficient resources|exceeds the balance/i.test(msg))
+    return "Insufficient ETH to cover gas for this transaction";
+  return msg.slice(0, 120);
+}
+
 export function ProfileDrawer() {
   const profileOpen = useBoardStore((s) => s.profileOpen);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
@@ -44,6 +63,21 @@ export function ProfileDrawer() {
   const { ids, isLoading } = usePlotsByOwner(address);
 
   const [details, setDetails] = useState<Record<number, Plot>>({});
+
+  // Multi-select: apply one image across several owned plots in one tx.
+  const [multiMode, setMultiMode] = useState(false);
+  const [selected, setSelected] = useState<number[]>([]);
+
+  const toggleSelected = (id: number) =>
+    setSelected((s) => (s.includes(id) ? s.filter((i) => i !== id) : [...s, id]));
+
+  // Reset multi-select whenever the drawer closes or the wallet changes.
+  useEffect(() => {
+    if (!profileOpen) {
+      setMultiMode(false);
+      setSelected([]);
+    }
+  }, [profileOpen]);
 
   // Fetch details for owned plots in one batch.
   useEffect(() => {
@@ -97,7 +131,7 @@ export function ProfileDrawer() {
           <button
             type="button"
             onClick={() => setProfileOpen(false)}
-            className="mb-3 inline-flex items-center gap-1.5 rounded-lg border-2 border-base-blue px-3 py-1.5 text-sm font-semibold text-base-blue hover:bg-blue-50"
+            className="mb-3 inline-flex items-center gap-1.5 rounded-lg border-2 border-base-blue px-3 py-1.5 text-sm font-semibold text-base-blue transition hover:bg-blue-50"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
               <path
@@ -163,15 +197,59 @@ export function ProfileDrawer() {
             </div>
           ) : (
             <div className="space-y-3">
-              <p className="text-sm font-semibold text-slate-600">
-                {ids.length} plot{ids.length === 1 ? "" : "s"} owned
-              </p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-600">
+                  {ids.length} plot{ids.length === 1 ? "" : "s"} owned
+                </p>
+                {ids.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMultiMode((m) => !m);
+                      setSelected([]);
+                    }}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                      multiMode
+                        ? "bg-base-blue text-white"
+                        : "border-2 border-base-blue text-base-blue hover:bg-blue-50"
+                    }`}
+                  >
+                    {multiMode ? "Done" : "＋ One image, many plots"}
+                  </button>
+                )}
+              </div>
+
+              {multiMode && (
+                <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-base-blue">
+                  Tap the plots you want to cover, then upload a single image —
+                  it spans the whole selection in one transaction.
+                </p>
+              )}
+
               {ids.map((id) => (
-                <OwnedPlotRow key={id} plotId={id} plot={details[id]} />
+                <OwnedPlotRow
+                  key={id}
+                  plotId={id}
+                  plot={details[id]}
+                  selectable={multiMode}
+                  checked={selected.includes(id)}
+                  onToggle={() => toggleSelected(id)}
+                />
               ))}
             </div>
           )}
         </div>
+
+        {/* Multi-plot image panel pinned to the bottom while selecting. */}
+        {multiMode && selected.length > 0 && (
+          <MultiImagePanel
+            selected={selected}
+            onDone={() => {
+              setSelected([]);
+              setMultiMode(false);
+            }}
+          />
+        )}
       </aside>
     </>
   );
@@ -179,48 +257,52 @@ export function ProfileDrawer() {
 
 type Action = "none" | "list" | "price" | "image";
 
-function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
+function OwnedPlotRow({
+  plotId,
+  plot,
+  selectable,
+  checked,
+  onToggle,
+}: {
+  plotId: number;
+  plot?: Plot;
+  selectable: boolean;
+  checked: boolean;
+  onToggle: () => void;
+}) {
   const { x, y } = xyFromPlotId(plotId);
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
-  const { writeContractAsync, status, error } = useBaseBoardWrite();
+  const pushToast = useBoardStore((s) => s.pushToast);
+  const { writeContractAsync, status, isSuccess, error } = useBaseBoardWrite();
 
   const [action, setAction] = useState<Action>("none");
   const [priceInput, setPriceInput] = useState("");
-  const [imageInput, setImageInput] = useState(plot?.imageUri ?? "");
-  const [imageError, setImageError] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-
-  // Read a chosen device image (camera/gallery on mobile) into a data URI.
-  const onPickFile = (file: File | undefined) => {
-    setImageError(null);
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setImageError("Please choose an image file");
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      setImageError(
-        "Image is over 60 KB — host it somewhere and paste the URL instead (on-chain storage is expensive).",
-      );
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () =>
-      setImageInput(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => setImageError("Could not read that file");
-    reader.readAsDataURL(file);
-  };
+  const [pendingLabel, setPendingLabel] = useState<string | null>(null);
 
   const busy = status === "pending" || status === "confirming";
 
-  const run = async (fn: () => Promise<unknown>) => {
+  // Toast + close the form once a submitted tx is mined.
+  useEffect(() => {
+    if (isSuccess && pendingLabel) {
+      pushToast("success", `${pendingLabel} confirmed`);
+      setPendingLabel(null);
+      setAction("none");
+    }
+  }, [isSuccess, pendingLabel, pushToast]);
+
+  const submit = async (label: string, fn: () => Promise<unknown>) => {
     setLocalError(null);
+    setPendingLabel(label);
     try {
       await fn();
-      setAction("none");
+      pushToast("info", `${label} submitted — waiting for confirmation…`);
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message.slice(0, 140) : "Failed");
+      setPendingLabel(null);
+      const m = friendlyTxError(e);
+      setLocalError(m);
+      pushToast("error", m);
     }
   };
 
@@ -238,7 +320,7 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
   const onList = () => {
     const v = parsePrice();
     if (v == null) return;
-    return run(() =>
+    void submit("Listing", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
@@ -251,7 +333,7 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
   const onUpdatePrice = () => {
     const v = parsePrice();
     if (v == null) return;
-    return run(() =>
+    void submit("Price update", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
@@ -262,7 +344,7 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
   };
 
   const onCancel = () =>
-    run(() =>
+    void submit("Cancel listing", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
@@ -271,22 +353,64 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
       }),
     );
 
-  const onImage = () => {
-    const err = validateImageRef(imageInput);
-    if (err) {
-      setImageError(err);
-      return;
-    }
-    setImageError(null);
-    return run(() =>
+  const onSaveImage = (uri: string) =>
+    submit("Image update", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
-        args: [BigInt(plotId), imageInput.trim()],
+        args: [BigInt(plotId), uri],
       }),
     );
-  };
+
+  // In multi-select mode the whole row becomes a selection toggle.
+  if (selectable) {
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`flex w-full items-center gap-3 rounded-xl border-2 p-3 text-left transition ${
+          checked
+            ? "border-base-blue bg-blue-50"
+            : "border-blue-100 hover:border-base-blue/50"
+        }`}
+      >
+        <span
+          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 ${
+            checked ? "border-base-blue bg-base-blue" : "border-slate-300"
+          }`}
+        >
+          {checked && (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M20 6L9 17l-5-5"
+                stroke="white"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </span>
+        {plot?.imageUri ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={previewSrc(plot.imageUri)}
+            alt=""
+            className="h-9 w-9 shrink-0 rounded-md border border-blue-100 object-cover"
+          />
+        ) : (
+          <span className="h-9 w-9 shrink-0 rounded-md border border-blue-100 bg-blue-50" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block font-bold text-base-blue">
+            ({x}, {y})
+          </span>
+          <span className="block text-xs text-slate-500">id #{plotId}</span>
+        </span>
+      </button>
+    );
+  }
 
   return (
     <div className="rounded-xl border-2 border-blue-100 p-3">
@@ -320,7 +444,7 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
       {plot?.imageUri && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={plot.imageUri}
+          src={previewSrc(plot.imageUri)}
           alt="plot"
           className="mt-2 h-20 w-full rounded-lg border border-blue-100 object-cover"
         />
@@ -329,27 +453,34 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
       {/* Action buttons */}
       <div className="mt-3 flex flex-wrap gap-2">
         {!plot?.isForSale ? (
-          <ActionButton onClick={() => setAction(action === "list" ? "none" : "list")}>
+          <ActionButton
+            active={action === "list"}
+            onClick={() => setAction(action === "list" ? "none" : "list")}
+          >
             List for Sale
           </ActionButton>
         ) : (
           <>
             <ActionButton
+              active={action === "price"}
               onClick={() => setAction(action === "price" ? "none" : "price")}
             >
               Update Price
             </ActionButton>
-            <ActionButton onClick={onCancel} variant="danger">
+            <ActionButton onClick={onCancel} variant="danger" disabled={busy}>
               Cancel Listing
             </ActionButton>
           </>
         )}
-        <ActionButton onClick={() => setAction(action === "image" ? "none" : "image")}>
-          Upload/Update Image
+        <ActionButton
+          active={action === "image"}
+          onClick={() => setAction(action === "image" ? "none" : "image")}
+        >
+          {plot?.imageUri ? "Update Image" : "Upload Image"}
         </ActionButton>
       </div>
 
-      {/* Inline forms */}
+      {/* Inline price form */}
       {(action === "list" || action === "price") && (
         <div className="mt-3 flex gap-2">
           <input
@@ -361,86 +492,252 @@ function OwnedPlotRow({ plotId, plot }: { plotId: number; plot?: Plot }) {
             placeholder="Price in ETH"
             className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
           />
-          <button
-            type="button"
+          <PrimaryButton
             onClick={action === "list" ? onList : onUpdatePrice}
-            disabled={busy}
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-base-blue px-3 py-1.5 text-sm font-bold text-white hover:bg-base-dark disabled:opacity-50"
+            busy={busy}
+            disabled={busy || !priceInput}
           >
-            {busy && <Spinner size={14} className="!border-white/40 !border-t-white" />}
             {action === "list" ? "List" : "Update"}
-          </button>
+          </PrimaryButton>
         </div>
       )}
 
+      {/* Inline image form */}
       {action === "image" && (
-        <div className="mt-3 space-y-2">
-          {/* Mobile camera / gallery upload */}
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-slate-500">
-              Upload from device (camera / gallery)
-            </span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => onPickFile(e.target.files?.[0])}
-              className="block w-full cursor-pointer rounded-lg border-2 border-blue-100 text-xs file:mr-3 file:cursor-pointer file:border-0 file:bg-base-blue file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-white"
-            />
-          </label>
-
-          <div className="flex items-center gap-2">
-            <span className="h-px flex-1 bg-blue-100" />
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-              or paste a URL
-            </span>
-            <span className="h-px flex-1 bg-blue-100" />
-          </div>
-
-          <input
-            type="text"
-            value={imageInput.startsWith("data:") ? "" : imageInput}
-            onChange={(e) => {
-              setImageInput(e.target.value);
-              setImageError(null);
-            }}
-            placeholder="https://….png · .jpg · .webp · .gif · ipfs://CID"
-            className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
+        <div className="mt-3">
+          <ImageUploader
+            initialValue={plot?.imageUri ?? ""}
+            busy={busy}
+            onSave={onSaveImage}
           />
-
-          {imageInput && !imageError && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={previewSrc(imageInput)}
-              alt="preview"
-              className="h-24 w-full rounded-lg border border-blue-100 object-cover"
-              onError={() => setImageError("That image could not be loaded")}
-            />
-          )}
-
-          {imageError && (
-            <p className="break-words text-xs text-red-600">{imageError}</p>
-          )}
-
-          <button
-            type="button"
-            onClick={onImage}
-            disabled={busy}
-            className="flex w-full items-center justify-center gap-1 whitespace-nowrap rounded-lg bg-base-blue px-3 py-1.5 text-sm font-bold text-white hover:bg-base-dark disabled:opacity-50"
-          >
-            {busy && <Spinner size={14} className="!border-white/40 !border-t-white" />}
-            Save Image
-          </button>
         </div>
       )}
 
-      {status === "success" && (
-        <p className="mt-2 text-xs font-semibold text-green-600">Updated!</p>
-      )}
-      {(localError || error) && status !== "success" && (
-        <p className="mt-2 break-words text-xs text-red-600">
-          {localError || error?.message?.slice(0, 140)}
+      {localError && (
+        <p className="mt-2 break-words text-xs font-medium text-red-600">
+          {localError}
         </p>
       )}
+      {!localError && error && status === "error" && (
+        <p className="mt-2 break-words text-xs font-medium text-red-600">
+          {friendlyTxError(error)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Bottom panel that applies a single image across several selected plots. */
+function MultiImagePanel({
+  selected,
+  onDone,
+}: {
+  selected: number[];
+  onDone: () => void;
+}) {
+  const pushToast = useBoardStore((s) => s.pushToast);
+  const { writeContractAsync, status, isSuccess } = useBaseBoardWrite();
+  const [pending, setPending] = useState(false);
+
+  const busy = pending || status === "pending" || status === "confirming";
+
+  const zone = useMemo<Zone>(() => {
+    const pts = selected.map((id) => xyFromPlotId(id));
+    return {
+      x1: Math.min(...pts.map((p) => p.x)),
+      y1: Math.min(...pts.map((p) => p.y)),
+      x2: Math.max(...pts.map((p) => p.x)),
+      y2: Math.max(...pts.map((p) => p.y)),
+    };
+  }, [selected]);
+
+  // Anchor = smallest plot id among the selection (top-most, then left-most) —
+  // guaranteed to be owned by the user, so updatePlotImage will pass.
+  const anchorId = useMemo(() => Math.min(...selected), [selected]);
+
+  useEffect(() => {
+    if (isSuccess && pending) {
+      pushToast("success", `Image applied across ${selected.length} plots`);
+      setPending(false);
+      onDone();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuccess]);
+
+  const onApply = async (uri: string) => {
+    const finalUri = withZone(uri, zone);
+    if (finalUri.length > MAX_ONCHAIN_IMAGE_BYTES) {
+      pushToast("error", "Image is too large to store on-chain — try a simpler one");
+      return;
+    }
+    setPending(true);
+    try {
+      await writeContractAsync({
+        address: baseBoardAddress,
+        abi: baseBoardAbi,
+        functionName: "updatePlotImage",
+        args: [BigInt(anchorId), finalUri],
+      });
+      pushToast("info", "Image submitted — waiting for confirmation…");
+    } catch (e) {
+      setPending(false);
+      pushToast("error", friendlyTxError(e));
+    }
+  };
+
+  return (
+    <div className="border-t-2 border-blue-100 bg-white p-4 shadow-[0_-8px_20px_rgba(0,82,255,0.06)]">
+      <p className="mb-2 text-sm font-bold text-base-blue">
+        {selected.length} plot{selected.length === 1 ? "" : "s"} selected ·{" "}
+        {zone.x2 - zone.x1 + 1}×{zone.y2 - zone.y1 + 1} area
+      </p>
+      <ImageUploader busy={busy} onSave={onApply} saveLabel="Apply to selection" />
+    </div>
+  );
+}
+
+/**
+ * Self-contained image picker: device upload (auto-compressed for on-chain
+ * storage) or a pasted URL, with live preview, validation and a Save button
+ * that only enables once a valid image is ready.
+ */
+function ImageUploader({
+  initialValue = "",
+  busy,
+  onSave,
+  saveLabel = "Save Image",
+}: {
+  initialValue?: string;
+  busy: boolean;
+  onSave: (uri: string) => void | Promise<void>;
+  saveLabel?: string;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [compressing, setCompressing] = useState(false);
+
+  const isData = value.startsWith("data:");
+
+  const onPickFile = async (file: File | undefined, input: HTMLInputElement) => {
+    setError(null);
+    setInfo(null);
+    input.value = ""; // allow re-picking the same file
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file");
+      return;
+    }
+    setCompressing(true);
+    setValue("");
+    try {
+      const res = await compressImageFile(file);
+      if (res.tooLarge) {
+        setError(
+          `That image is too detailed for on-chain storage (${(
+            res.bytes / 1024
+          ).toFixed(1)} KB). Try a simpler picture or paste a hosted URL.`,
+        );
+      } else {
+        setValue(res.dataUri);
+        setInfo(
+          `Ready · ${(res.bytes / 1024).toFixed(1)} KB · ${res.width}×${res.height}`,
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not process that image");
+    } finally {
+      setCompressing(false);
+    }
+  };
+
+  const validationError = validateImageRef(value);
+  const ready = !busy && !compressing && validationError === null;
+
+  const handleSave = async () => {
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setError(null);
+    await onSave(value.trim());
+  };
+
+  return (
+    <div className="space-y-2.5">
+      {/* Device upload (camera / gallery on mobile) */}
+      <label className="group flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 px-3 py-4 text-center transition hover:border-base-blue hover:bg-blue-50">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+            stroke="#0052ff"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="text-xs font-bold text-base-blue">
+          Upload from device
+        </span>
+        <span className="text-[10px] text-slate-500">
+          Camera or gallery · auto-optimized for the chain
+        </span>
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => onPickFile(e.target.files?.[0], e.currentTarget)}
+        />
+      </label>
+
+      <div className="flex items-center gap-2">
+        <span className="h-px flex-1 bg-blue-100" />
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          or paste a URL
+        </span>
+        <span className="h-px flex-1 bg-blue-100" />
+      </div>
+
+      <input
+        type="text"
+        value={isData ? "" : value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          setError(null);
+          setInfo(null);
+        }}
+        placeholder="https://….png · .jpg · .webp · .gif · ipfs://CID"
+        className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
+      />
+
+      {/* Live status */}
+      {compressing && (
+        <p className="flex items-center gap-2 text-xs font-medium text-slate-500">
+          <Spinner size={13} /> Optimizing image…
+        </p>
+      )}
+      {info && !error && (
+        <p className="text-xs font-semibold text-green-600">{info}</p>
+      )}
+
+      {/* Preview */}
+      {value && !error && !compressing && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={previewSrc(value)}
+          alt="preview"
+          className="h-28 w-full rounded-lg border border-blue-100 object-cover"
+          onError={() => setError("That image could not be loaded")}
+        />
+      )}
+
+      {error && (
+        <p className="break-words text-xs font-medium text-red-600">{error}</p>
+      )}
+
+      <PrimaryButton onClick={handleSave} busy={busy} disabled={!ready} full>
+        {saveLabel}
+      </PrimaryButton>
     </div>
   );
 }
@@ -449,21 +746,62 @@ function ActionButton({
   children,
   onClick,
   variant = "default",
+  active = false,
+  disabled = false,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   variant?: "default" | "danger";
+  active?: boolean;
+  disabled?: boolean;
+}) {
+  const base =
+    "rounded-lg border-2 px-2.5 py-1 text-xs font-semibold transition disabled:opacity-40";
+  const styles =
+    variant === "danger"
+      ? "border-red-200 text-red-600 hover:bg-red-50"
+      : active
+        ? "border-base-blue bg-base-blue text-white"
+        : "border-base-blue text-base-blue hover:bg-blue-50";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`${base} ${styles}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PrimaryButton({
+  children,
+  onClick,
+  busy = false,
+  disabled = false,
+  full = false,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  busy?: boolean;
+  disabled?: boolean;
+  full?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg border-2 px-2.5 py-1 text-xs font-semibold ${
-        variant === "danger"
-          ? "border-red-200 text-red-600 hover:bg-red-50"
-          : "border-base-blue text-base-blue hover:bg-blue-50"
+      disabled={disabled}
+      className={`flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-bold transition ${
+        full ? "w-full" : ""
+      } ${
+        disabled
+          ? "cursor-not-allowed bg-slate-200 text-slate-400"
+          : "bg-base-blue text-white hover:bg-base-dark"
       }`}
     >
+      {busy && <Spinner size={14} className="!border-white/40 !border-t-white" />}
       {children}
     </button>
   );

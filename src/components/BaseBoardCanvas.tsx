@@ -15,6 +15,7 @@ import {
   ZERO_ADDRESS,
 } from "@/lib/constants";
 import { clamp, plotIdFromXY, xyFromPlotId } from "@/lib/coords";
+import { parseZone, stripZone } from "@/lib/image";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 
@@ -352,15 +353,19 @@ export function BaseBoardCanvas() {
       const me = address?.toLowerCase();
       const drawImages = cam.scale >= IMAGE_MIN_SCALE;
 
-      // Bucket loaded plots by `${owner}|${imageUri}` to compute zone bboxes.
+      // Bucket loaded plots by `${owner}|${imageUri}`. An image reference may
+      // carry a `#bb=x1,y1,x2,y2` zone fragment telling us to span a multi-plot
+      // area from a single anchor plot (one transaction). Otherwise the span is
+      // the bounding box of every cell that shares the same image (legacy multi).
       type Group = {
         owner: string;
         uri: string;
+        zone: { x1: number; y1: number; x2: number; y2: number } | null;
         x1: number;
         y1: number;
         x2: number;
         y2: number;
-        ids: number[];
+        cells: Array<{ x: number; y: number }>;
       };
       const groups = new Map<string, Group>();
 
@@ -389,41 +394,77 @@ export function BaseBoardCanvas() {
             g.y1 = Math.min(g.y1, y);
             g.x2 = Math.max(g.x2, x);
             g.y2 = Math.max(g.y2, y);
-            g.ids.push(id);
+            g.cells.push({ x, y });
           } else {
             groups.set(key, {
-              owner: plot.owner,
+              owner: plot.owner.toLowerCase(),
               uri: plot.imageUri,
+              zone: parseZone(plot.imageUri),
               x1: x,
               y1: y,
               x2: x,
               y2: y,
-              ids: [id],
+              cells: [{ x, y }],
             });
           }
         }
       });
 
-      // Stretch one image across each group's bounding box.
+      // Draw one image per group, cover-fitted (no distortion) across its span.
       if (drawImages) {
         groups.forEach((g) => {
           const img = getImage(g.uri);
-          if (img && img !== "error" && img.complete && img.naturalWidth > 0) {
-            const sx = cellToScreenX(g.x1);
-            const sy = cellToScreenY(g.y1);
-            const w = (g.x2 - g.x1 + 1) * cam.scale;
-            const h = (g.y2 - g.y1 + 1) * cam.scale;
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(sx, sy, w, h);
-            ctx.clip();
-            try {
-              ctx.drawImage(img, sx, sy, w, h);
-            } catch {
-              /* tainted/broken image — fill already drawn underneath */
-            }
-            ctx.restore();
+          if (!img || img === "error" || !img.complete || img.naturalWidth === 0)
+            return;
+
+          // Span: explicit zone bbox, else the cells sharing this image.
+          const bx1 = g.zone ? g.zone.x1 : g.x1;
+          const by1 = g.zone ? g.zone.y1 : g.y1;
+          const bx2 = g.zone ? g.zone.x2 : g.x2;
+          const by2 = g.zone ? g.zone.y2 : g.y2;
+
+          const dx = cellToScreenX(bx1);
+          const dy = cellToScreenY(by1);
+          const w = (bx2 - bx1 + 1) * cam.scale;
+          const h = (by2 - by1 + 1) * cam.scale;
+
+          ctx.save();
+          ctx.beginPath();
+          if (g.zone) {
+            // Clip to the owner's loaded cells inside the zone so the image
+            // never bleeds onto plots they don't own. Fall back to the full
+            // bbox before neighbouring cells have loaded.
+            let clipped = 0;
+            map.forEach((p, id2) => {
+              if (p.owner.toLowerCase() !== g.owner) return;
+              const c = xyFromPlotId(id2);
+              if (c.x < bx1 || c.x > bx2 || c.y < by1 || c.y > by2) return;
+              ctx.rect(
+                cellToScreenX(c.x),
+                cellToScreenY(c.y),
+                cam.scale,
+                cam.scale,
+              );
+              clipped++;
+            });
+            if (clipped === 0) ctx.rect(dx, dy, w, h);
+          } else {
+            g.cells.forEach((c) => {
+              ctx.rect(
+                cellToScreenX(c.x),
+                cellToScreenY(c.y),
+                cam.scale,
+                cam.scale,
+              );
+            });
           }
+          ctx.clip();
+          try {
+            drawCover(ctx, img, dx, dy, w, h);
+          } catch {
+            /* tainted/broken image — fill already drawn underneath */
+          }
+          ctx.restore();
         });
       }
 
@@ -466,7 +507,7 @@ export function BaseBoardCanvas() {
       img.onerror = () => {
         cache.set(uri, "error");
       };
-      img.src = resolveUri(uri);
+      img.src = resolveUri(stripZone(uri));
       cache.set(uri, img);
       return img;
     },
@@ -1086,6 +1127,44 @@ export function BaseBoardCanvas() {
       )}
     </div>
   );
+}
+
+/**
+ * Draw `img` into the destination rect using "cover" logic — the image is
+ * scaled to fill the whole rect while preserving its aspect ratio, cropping the
+ * overflow (centered). Mirrors CSS `background-size: cover`.
+ */
+function drawCover(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+): void {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  if (!iw || !ih || dw <= 0 || dh <= 0) return;
+  const dAR = dw / dh;
+  const sAR = iw / ih;
+  let sw: number;
+  let sh: number;
+  let sx: number;
+  let sy: number;
+  if (sAR > dAR) {
+    // Source is wider than dest → crop left/right.
+    sh = ih;
+    sw = ih * dAR;
+    sx = (iw - sw) / 2;
+    sy = 0;
+  } else {
+    // Source is taller than dest → crop top/bottom.
+    sw = iw;
+    sh = iw / dAR;
+    sx = 0;
+    sy = (ih - sh) / 2;
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
 /** Resolve ipfs:// URIs (and bare CIDs) to an HTTP gateway. */

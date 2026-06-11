@@ -9,6 +9,7 @@ import { ProfileDrawer } from "@/components/ProfileDrawer";
 import { PlotModal } from "@/components/PlotModal";
 import { BuyModal } from "@/components/BuyModal";
 import { Legend } from "@/components/Legend";
+import { Toaster } from "@/components/Toaster";
 import { useBoardStore } from "@/store/useBoardStore";
 
 export default function Home() {
@@ -59,6 +60,7 @@ export default function Home() {
       <ProfileDrawer />
       <PlotModal />
       <BuyModal />
+      <Toaster />
     </div>
   );
 }

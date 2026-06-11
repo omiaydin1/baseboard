@@ -1,13 +1,83 @@
 import { http, createConfig, createStorage, cookieStorage } from "wagmi";
-import { base } from "wagmi/chains";
+import { base, hardhat } from "wagmi/chains";
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
-import { WALLETCONNECT_PROJECT_ID } from "./constants";
+import { DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
+
+const LOCAL_RPC = "http://127.0.0.1:8545";
+
+/**
+ * Dev-only: install a minimal EIP-1193 provider on `window.ethereum` that proxies
+ * JSON-RPC to a local Hardhat node. Hardhat's accounts are unlocked, so
+ * `eth_sendTransaction` is signed by the node — letting the injected connector
+ * drive the full buy/list/image flow locally without a real wallet. No-op unless
+ * `NEXT_PUBLIC_DEV_LOCAL=1`.
+ */
+function installLocalProvider() {
+  if (!DEV_LOCAL || typeof window === "undefined") return;
+  const w = window as unknown as { ethereum?: unknown };
+  if (w.ethereum) return;
+
+  const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"; // hardhat #0
+  let rpcId = 0;
+
+  const raw = async (method: string, params: unknown[]) => {
+    const res = await fetch(LOCAL_RPC, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: ++rpcId,
+        method,
+        params: params ?? [],
+      }),
+    });
+    const json = await res.json();
+    if (json.error)
+      throw Object.assign(new Error(json.error.message), {
+        code: json.error.code,
+      });
+    return json.result;
+  };
+
+  const provider = {
+    isMetaMask: true,
+    request: async ({
+      method,
+      params,
+    }: {
+      method: string;
+      params?: unknown[];
+    }) => {
+      switch (method) {
+        case "eth_requestAccounts":
+        case "eth_accounts":
+          return [ACCOUNT];
+        case "eth_chainId":
+          return "0x7a69"; // 31337
+        case "net_version":
+          return "31337";
+        case "wallet_switchEthereumChain":
+        case "wallet_addEthereumChain":
+        case "wallet_watchAsset":
+          return null;
+        default:
+          return raw(method, params ?? []);
+      }
+    },
+    on: () => {},
+    removeListener: () => {},
+  };
+
+  w.ethereum = provider;
+}
 
 /**
  * wagmi config restricted to Base Mainnet (8453). Supports Coinbase Wallet,
  * MetaMask / injected wallets, and (optionally) WalletConnect.
  */
 export function getWagmiConfig() {
+  installLocalProvider();
+
   const connectors = [
     coinbaseWallet({
       appName: "BaseBoard",
@@ -24,14 +94,24 @@ export function getWagmiConfig() {
       : []),
   ];
 
-  return createConfig({
-    chains: [base],
+  const shared = {
     connectors,
     storage: createStorage({ storage: cookieStorage }),
     ssr: true,
-    transports: {
-      [base.id]: http(),
-    },
+  };
+
+  if (DEV_LOCAL) {
+    return createConfig({
+      ...shared,
+      chains: [hardhat],
+      transports: { [hardhat.id]: http(LOCAL_RPC) },
+    });
+  }
+
+  return createConfig({
+    ...shared,
+    chains: [base],
+    transports: { [base.id]: http() },
   });
 }
 

@@ -2,6 +2,14 @@ import { create } from "zustand";
 import type { BBox } from "@/lib/coords";
 import type { Plot } from "@/lib/types";
 
+export type ToastKind = "success" | "error" | "info";
+
+export interface Toast {
+  id: number;
+  kind: ToastKind;
+  message: string;
+}
+
 interface BoardUIState {
   /** Profile drawer open/closed. */
   profileOpen: boolean;
@@ -48,7 +56,14 @@ interface BoardUIState {
   /** Plot id the canvas should fly to / highlight (from the profile list). */
   focusPlotId: number | null;
   setFocusPlotId: (id: number | null) => void;
+
+  /** Transient toast notifications (tx success / failure, validation). */
+  toasts: Toast[];
+  pushToast: (kind: ToastKind, message: string) => void;
+  dismissToast: (id: number) => void;
 }
+
+let _toastId = 0;
 
 export const useBoardStore = create<BoardUIState>((set) => ({
   profileOpen: false,
@@ -93,4 +108,17 @@ export const useBoardStore = create<BoardUIState>((set) => ({
 
   focusPlotId: null,
   setFocusPlotId: (id) => set({ focusPlotId: id }),
+
+  toasts: [],
+  pushToast: (kind, message) => {
+    const id = ++_toastId;
+    set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+      }, 4500);
+    }
+  },
+  dismissToast: (id) =>
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));

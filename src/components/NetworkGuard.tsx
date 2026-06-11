@@ -1,7 +1,7 @@
 "use client";
 
 import { useAccount, useChainId, useSwitchChain } from "wagmi";
-import { TARGET_CHAIN_ID } from "@/lib/constants";
+import { ACTIVE_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
 import { Spinner } from "./Spinner";
 
 /**
@@ -13,7 +13,7 @@ export function NetworkGuard() {
   const chainId = useChainId();
   const { switchChain, isPending } = useSwitchChain();
 
-  if (!isConnected || chainId === TARGET_CHAIN_ID) return null;
+  if (!isConnected || chainId === ACTIVE_CHAIN_ID || DEV_LOCAL) return null;
 
   return (
     <div className="w-full bg-amber-500 text-white">
@@ -24,7 +24,7 @@ export function NetworkGuard() {
         </span>
         <button
           type="button"
-          onClick={() => switchChain({ chainId: TARGET_CHAIN_ID })}
+          onClick={() => switchChain({ chainId: ACTIVE_CHAIN_ID })}
           disabled={isPending}
           className="inline-flex items-center gap-2 rounded-lg bg-white px-3 py-1 font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-60"
         >
