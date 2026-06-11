@@ -47,6 +47,11 @@ function previewSrc(ref: string): string {
 /** Turn a raw wallet/tx error into a short, human message. */
 function friendlyTxError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
+  
+  // 🔍 DEBUG OVERRIDE: Cüzdanın sakladığı gerçek hatayı okumak için maskeyi kaldırıyoruz
+  return "RAW ERROR: " + msg.slice(0, 300);
+
+  // eslint-disable-next-line no-unreachable
   if (/user rejected|rejected the request|user denied|denied/i.test(msg))
     return "Transaction cancelled in your wallet";
   if (/insufficient funds|insufficient resources|exceeds the balance/i.test(msg))
@@ -397,7 +402,7 @@ function OwnedPlotRow({
       pushToast("error", problem);
       return;
     }
-    // FIX: Manual gas limit added here to override failing wallet estimation
+    // Hardcoded gas overrides to prevent automated gas preflight check failures
     await submit("Image update", () =>
       writeContractAsync({
         address: baseBoardAddress,
@@ -617,7 +622,6 @@ function MultiImagePanel({
     }
     setPending(true);
     try {
-      // FIX: Manual gas limit added here too for multi-selection tool
       await writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
