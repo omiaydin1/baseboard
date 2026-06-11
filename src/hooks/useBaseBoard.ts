@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect } from "react";
 import {
-  useChainId,
+  useAccount,
   useReadContract,
   useSwitchChain,
   useWatchContractEvent,
@@ -107,7 +107,7 @@ export function usePlotsByOwner(account?: `0x${string}`) {
 
 export function useBaseBoardWrite() {
   const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
-  const chainId = useChainId();
+  const { connector } = useAccount();
   const {
     writeContract,
     writeContractAsync,
@@ -134,12 +134,46 @@ export function useBaseBoardWrite() {
           { ...variables, chainId: ACTIVE_CHAIN_ID, chain: base },
           options,
         );
-      if (chainId !== ACTIVE_CHAIN_ID) {
-        return switchChainAsync({ chainId: ACTIVE_CHAIN_ID }).then(doWrite);
-      }
-      return doWrite();
+
+      const ensureBaseAndWrite = async () => {
+        if (connector) {
+          const provider = await connector.getProvider() as {
+            request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+          };
+          const rawId = await provider.request({ method: "eth_chainId" }) as string;
+          const realChainId = parseInt(rawId, 16);
+          if (realChainId !== ACTIVE_CHAIN_ID) {
+            const hexChainId = `0x${ACTIVE_CHAIN_ID.toString(16)}`;
+            try {
+              await provider.request({
+                method: "wallet_switchEthereumChain",
+                params: [{ chainId: hexChainId }],
+              });
+            } catch (switchErr: unknown) {
+              const code = (switchErr as { code?: number })?.code;
+              if (code === 4902 || code === -32603) {
+                await provider.request({
+                  method: "wallet_addEthereumChain",
+                  params: [{
+                    chainId: hexChainId,
+                    chainName: "Base",
+                    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+                    rpcUrls: ["https://mainnet.base.org"],
+                    blockExplorerUrls: ["https://basescan.org"],
+                  }],
+                });
+              } else {
+                throw new Error("Please switch to Base Mainnet in your wallet to continue.");
+              }
+            }
+          }
+        }
+        return doWrite();
+      };
+
+      return ensureBaseAndWrite();
     }) as WriteAsync,
-    [writeContractAsync, switchChainAsync, chainId],
+    [writeContractAsync, switchChainAsync, connector],
   );
 
   const status = isPending
