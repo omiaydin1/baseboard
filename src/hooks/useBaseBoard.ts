@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect } from "react";
 import {
+  useAccount,
   useReadContract,
-  useSwitchChain,
   useWatchContractEvent,
   useWriteContract,
   useWaitForTransactionReceipt,
@@ -106,6 +106,7 @@ export function usePlotsByOwner(account?: `0x${string}`) {
 
 export function useBaseBoardWrite() {
   const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
+  const { connector } = useAccount();
   const {
     writeContract,
     writeContractAsync,
@@ -114,7 +115,6 @@ export function useBaseBoardWrite() {
     error,
     reset,
   } = useWriteContract();
-  const { switchChainAsync } = useSwitchChain();
 
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
     hash,
@@ -126,14 +126,37 @@ export function useBaseBoardWrite() {
 
   type WriteAsync = typeof writeContractAsync;
   const writeContractAsyncGuarded = useCallback<WriteAsync>(
-    ((variables, options) =>
-      switchChainAsync({ chainId: ACTIVE_CHAIN_ID }).then(() =>
+    ((variables, options) => {
+      const doWrite = () =>
         writeContractAsync(
           { ...variables, chainId: ACTIVE_CHAIN_ID, chain: base },
           options,
-        ),
-      )) as WriteAsync,
-    [writeContractAsync, switchChainAsync],
+        );
+
+      const ensureChainAndWrite = async () => {
+        if (connector) {
+          try {
+            const provider = await connector.getProvider() as {
+              request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+            };
+            const rawId = await provider.request({ method: "eth_chainId" }) as string;
+            const realChainId = parseInt(rawId, 16);
+            if (realChainId !== ACTIVE_CHAIN_ID) {
+              await provider.request({
+                method: "wallet_switchEthereumChain",
+                params: [{ chainId: `0x${ACTIVE_CHAIN_ID.toString(16)}` }],
+              });
+            }
+          } catch {
+            // switch failed or unsupported — let writeContractAsync handle it
+          }
+        }
+        return doWrite();
+      };
+
+      return ensureChainAndWrite();
+    }) as WriteAsync,
+    [writeContractAsync, connector],
   );
 
   const status = isPending
