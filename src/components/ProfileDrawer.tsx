@@ -60,15 +60,17 @@ function friendlyTxError(e: unknown): string {
 
 type MinimalPublicClient = {
   readContract: (args: unknown) => Promise<unknown>;
-  simulateContract: (args: unknown) => Promise<unknown>;
 };
 
 /**
- * Validate an `updatePlotImage` call *before* it reaches the wallet so smart
- * wallets / Coinbase Smart Wallet never hit a cryptic "failed to estimate gas
- * for user operation: execution reverted". Confirms the connected account is
- * still the on-chain owner and that the call simulates cleanly. Returns a
- * human-readable error string, or `null` when the transaction is safe to send.
+ * Validate an `updatePlotImage` call *before* it reaches the wallet.
+ * Only checks size and on-chain ownership — no gas simulation.
+ *
+ * Why no simulateContract: Coinbase Smart Wallet uses a paymaster to sponsor
+ * gas, so eth_estimateGas fails with "estimate gas" for accounts that hold no
+ * ETH on Base, even when the transaction is perfectly valid. Skipping the
+ * simulation avoids this false-positive while still catching the two real
+ * pre-conditions: image too large and caller no longer owns the plot.
  */
 async function preflightImageUpdate(
   publicClient: MinimalPublicClient | null | undefined,
@@ -93,13 +95,6 @@ async function preflightImageUpdate(
     if (!plot || plot.owner.toLowerCase() !== account.toLowerCase())
       return "You no longer own this plot — refresh your profile and try again";
 
-    await publicClient.simulateContract({
-      address: baseBoardAddress,
-      abi: baseBoardAbi,
-      functionName: "updatePlotImage",
-      args: [BigInt(plotId), v],
-      account,
-    });
     return null;
   } catch (e) {
     return friendlyTxError(e);
@@ -808,8 +803,7 @@ function ImageUploader({
         <p className="text-xs font-semibold text-green-600">{info}</p>
       )}
 
-      {/* Preview — shaped to the destination area so multi-plot zones show one
-          unified image exactly as it will render on the board. */}
+      {/* Preview */}
       {value && !error && !compressing && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
