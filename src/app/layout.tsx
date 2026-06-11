@@ -20,6 +20,8 @@ export const metadata: Metadata = {
     "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
   other: {
     "base:app_id": "6a29aec065478aa1565a99bb",
+    "talentapp:project_verification":
+      "cd5f74f844402d75645d622fd73fe10225844494750f5977da781720a9008431b98c3d10e1d7edba21673c7b736162c63e456dc3f2b93ffa0d51ca3b5927f63c",
   },
 };
 

@@ -6,6 +6,19 @@ const nextConfig = {
     // builds on lint so deployments stay unblocked.
     ignoreDuringBuilds: false,
   },
+  async headers() {
+    // Allow Farcaster / Base App crawlers to fetch verification + manifest
+    // files cross-origin so domain validation doesn't fail on CORS.
+    return [
+      {
+        source: "/.well-known/:path*",
+        headers: [
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Access-Control-Allow-Methods", value: "GET, OPTIONS" },
+        ],
+      },
+    ];
+  },
   webpack: (config) => {
     // wagmi / walletconnect pull in optional deps that aren't needed in the
     // browser bundle. Alias them to empty modules so webpack neither tries to

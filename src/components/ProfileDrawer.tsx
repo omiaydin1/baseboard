@@ -51,7 +51,59 @@ function friendlyTxError(e: unknown): string {
     return "Transaction cancelled in your wallet";
   if (/insufficient funds|insufficient resources|exceeds the balance/i.test(msg))
     return "Insufficient ETH to cover gas for this transaction";
-  return msg.slice(0, 120);
+  if (/not plot owner/i.test(msg))
+    return "You don't own this plot anymore — refresh your profile";
+  if (/estimate gas|reverted|execution reverted|user ?operation/i.test(msg))
+    return "The wallet couldn't run this transaction — your image may be too large or you no longer own this plot";
+  return msg.slice(0, 140);
+}
+
+type MinimalPublicClient = {
+  readContract: (args: unknown) => Promise<unknown>;
+  simulateContract: (args: unknown) => Promise<unknown>;
+};
+
+/**
+ * Validate an `updatePlotImage` call *before* it reaches the wallet so smart
+ * wallets / Coinbase Smart Wallet never hit a cryptic "failed to estimate gas
+ * for user operation: execution reverted". Confirms the connected account is
+ * still the on-chain owner and that the call simulates cleanly. Returns a
+ * human-readable error string, or `null` when the transaction is safe to send.
+ */
+async function preflightImageUpdate(
+  publicClient: MinimalPublicClient | null | undefined,
+  account: `0x${string}` | undefined,
+  plotId: number,
+  uri: string,
+): Promise<string | null> {
+  if (!account) return "Connect your wallet first";
+  const v = uri.trim();
+  if (!v) return "Add an image before saving";
+  if (v.length > MAX_ONCHAIN_IMAGE_BYTES)
+    return "Image is too large to store on-chain — try a simpler one";
+  // Without a public client we can't preflight; let the wallet handle it.
+  if (!publicClient) return null;
+  try {
+    const plot = (await publicClient.readContract({
+      address: baseBoardAddress,
+      abi: baseBoardAbi,
+      functionName: "getPlot",
+      args: [BigInt(plotId)],
+    })) as Plot | undefined;
+    if (!plot || plot.owner.toLowerCase() !== account.toLowerCase())
+      return "You no longer own this plot — refresh your profile and try again";
+
+    await publicClient.simulateContract({
+      address: baseBoardAddress,
+      abi: baseBoardAbi,
+      functionName: "updatePlotImage",
+      args: [BigInt(plotId), v],
+      account,
+    });
+    return null;
+  } catch (e) {
+    return friendlyTxError(e);
+  }
 }
 
 export function ProfileDrawer() {
@@ -271,6 +323,8 @@ function OwnedPlotRow({
   onToggle: () => void;
 }) {
   const { x, y } = xyFromPlotId(plotId);
+  const { address } = useAccount();
+  const publicClient = usePublicClient();
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
@@ -353,15 +407,27 @@ function OwnedPlotRow({
       }),
     );
 
-  const onSaveImage = (uri: string) =>
-    submit("Image update", () =>
+  const onSaveImage = async (uri: string) => {
+    const problem = await preflightImageUpdate(
+      publicClient as MinimalPublicClient | undefined,
+      address,
+      plotId,
+      uri,
+    );
+    if (problem) {
+      setLocalError(problem);
+      pushToast("error", problem);
+      return;
+    }
+    await submit("Image update", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
-        args: [BigInt(plotId), uri],
+        args: [BigInt(plotId), uri.trim()],
       }),
     );
+  };
 
   // In multi-select mode the whole row becomes a selection toggle.
   if (selectable) {
@@ -536,6 +602,8 @@ function MultiImagePanel({
   onDone: () => void;
 }) {
   const pushToast = useBoardStore((s) => s.pushToast);
+  const { address } = useAccount();
+  const publicClient = usePublicClient();
   const { writeContractAsync, status, isSuccess } = useBaseBoardWrite();
   const [pending, setPending] = useState(false);
 
@@ -566,8 +634,14 @@ function MultiImagePanel({
 
   const onApply = async (uri: string) => {
     const finalUri = withZone(uri, zone);
-    if (finalUri.length > MAX_ONCHAIN_IMAGE_BYTES) {
-      pushToast("error", "Image is too large to store on-chain — try a simpler one");
+    const problem = await preflightImageUpdate(
+      publicClient as MinimalPublicClient | undefined,
+      address,
+      anchorId,
+      finalUri,
+    );
+    if (problem) {
+      pushToast("error", problem);
       return;
     }
     setPending(true);

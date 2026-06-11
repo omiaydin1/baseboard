@@ -46,6 +46,16 @@ export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_BASEBOARD_CONTRACT_ADDR
 export const ZERO_ADDRESS =
   "0x0000000000000000000000000000000000000000" as `0x${string}`;
 
+/**
+ * Block the BaseBoard contract was deployed at. Used as the `fromBlock` when
+ * scanning `PlotsPurchased` logs to enumerate every minted plot (so owned /
+ * for-sale plots can be drawn at any zoom level). Override per-deployment via
+ * `NEXT_PUBLIC_BASEBOARD_DEPLOY_BLOCK`.
+ */
+export const BASEBOARD_DEPLOY_BLOCK = DEV_LOCAL
+  ? 0
+  : Number(process.env.NEXT_PUBLIC_BASEBOARD_DEPLOY_BLOCK || "47083347");
+
 /** Whether a real contract address has been configured. */
 export const IS_CONTRACT_CONFIGURED =
   CONTRACT_ADDRESS.toLowerCase() !== ZERO_ADDRESS.toLowerCase();

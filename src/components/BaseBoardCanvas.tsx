@@ -10,6 +10,7 @@ import {
 import { usePublicClient, useAccount } from "wagmi";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import {
+  BASEBOARD_DEPLOY_BLOCK,
   GRID_SIZE,
   IS_CONTRACT_CONFIGURED,
   ZERO_ADDRESS,
@@ -151,6 +152,25 @@ export function BaseBoardCanvas() {
     return Math.max(MIN_SCALE_FLOOR, Math.min(width, height) / GRID_SIZE);
   }, []);
 
+  /**
+   * Center the entire 3162x3162 grid in the viewport and scale it so the whole
+   * board fits with a small margin (so the blue frame is visible). Used for the
+   * initial "welcome screen" load and the Reset button, on desktop and mobile.
+   */
+  const fitWholeBoard = useCallback(() => {
+    const cam = cameraRef.current;
+    const { width, height } = sizeRef.current;
+    if (!width || !height) return;
+    const scale = Math.max(
+      MIN_SCALE_FLOOR,
+      (Math.min(width, height) / GRID_SIZE) * 0.92,
+    );
+    cam.scale = scale;
+    cam.camX = GRID_SIZE / 2 - width / scale / 2;
+    cam.camY = GRID_SIZE / 2 - height / scale / 2;
+    setZoomLabel(cam.scale);
+  }, []);
+
   // -------------------------------------------------------------------
   // Resize handling (DPR-aware)
   // -------------------------------------------------------------------
@@ -168,14 +188,10 @@ export function BaseBoardCanvas() {
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
 
-      // Initialize camera centered on first valid size.
+      // On first valid size, frame the whole board as a centered welcome view.
       const cam = cameraRef.current;
       if (cam.scale === 1 && cam.camX === 0 && cam.camY === 0) {
-        const minScale = fitScale();
-        cam.scale = clamp(minScale * 6, MIN_SCALE_FLOOR, MAX_SCALE);
-        cam.camX = GRID_SIZE / 2 - rect.width / cam.scale / 2;
-        cam.camY = GRID_SIZE / 2 - rect.height / cam.scale / 2;
-        setZoomLabel(cam.scale);
+        fitWholeBoard();
       }
       dirtyRef.current = true;
     };
@@ -184,7 +200,7 @@ export function BaseBoardCanvas() {
     const ro = new ResizeObserver(resize);
     ro.observe(container);
     return () => ro.disconnect();
-  }, [fitScale]);
+  }, [fitWholeBoard]);
 
   // -------------------------------------------------------------------
   // Render loop
@@ -375,16 +391,24 @@ export function BaseBoardCanvas() {
         if (x < startX - 1 || x > endX + 1 || y < startY - 1 || y > endY + 1)
           return;
 
-        // Base fill per cell.
+        // Base fill per cell. Enforce a minimum on-screen marker size so owned
+        // / for-sale plots stay visible at any zoom level — including fully
+        // zoomed out, where a single cell would otherwise be sub-pixel.
         const isMine = me && plot.owner.toLowerCase() === me;
         const sx = cellToScreenX(x);
         const sy = cellToScreenY(y);
+        const marker = Math.max(cam.scale, 3);
         ctx.fillStyle = plot.isForSale
           ? "#60a5fa"
           : isMine
             ? "#1d4ed8"
             : "#bfdbfe";
-        ctx.fillRect(sx, sy, cam.scale, cam.scale);
+        ctx.fillRect(sx, sy, marker, marker);
+        // For-sale plots get a saturated outline so they pop even as a dot.
+        if (plot.isForSale && cam.scale < IMAGE_MIN_SCALE) {
+          ctx.fillStyle = "#0052ff";
+          ctx.fillRect(sx, sy, Math.max(cam.scale, 1.5), Math.max(cam.scale, 1.5));
+        }
 
         if (plot.imageUri) {
           const key = `${plot.owner.toLowerCase()}|${plot.imageUri}`;
@@ -568,6 +592,96 @@ export function BaseBoardCanvas() {
     if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
     loadTimerRef.current = setTimeout(() => void loadViewport(), 220);
   }, [loadViewport]);
+
+  // -------------------------------------------------------------------
+  // Global load: enumerate *every* minted plot so owned / for-sale plots are
+  // visible at any zoom level (the viewport scan above only covers a small,
+  // zoomed-in window). We discover minted plot ids from `PlotsPurchased` logs
+  // (scanned incrementally from the deploy block) then batch-read their current
+  // on-chain state so listings / transfers stay accurate.
+  // -------------------------------------------------------------------
+  const allMintedIdsRef = useRef<Set<number>>(new Set());
+  const lastScanBlockRef = useRef<number>(0);
+  const globalLoadingRef = useRef(false);
+
+  const loadAllMinted = useCallback(async () => {
+    if (!IS_CONTRACT_CONFIGURED || !publicClient) return;
+    if (globalLoadingRef.current) return;
+    globalLoadingRef.current = true;
+    try {
+      const latest = Number(await publicClient.getBlockNumber());
+      const from =
+        lastScanBlockRef.current > 0
+          ? lastScanBlockRef.current + 1
+          : BASEBOARD_DEPLOY_BLOCK;
+
+      // 1) Discover newly-minted plot ids from PlotsPurchased logs (chunked to
+      //    respect RPC block-range limits).
+      const LOG_CHUNK = 40_000;
+      for (let start = from; start <= latest; start += LOG_CHUNK + 1) {
+        const end = Math.min(start + LOG_CHUNK, latest);
+        try {
+          const logs = await publicClient.getContractEvents({
+            address: baseBoardAddress,
+            abi: baseBoardAbi,
+            eventName: "PlotsPurchased",
+            fromBlock: BigInt(start),
+            toBlock: BigInt(end),
+          });
+          logs.forEach((log) => {
+            const args = log.args as { plotIds?: readonly bigint[] };
+            args.plotIds?.forEach((b) => allMintedIdsRef.current.add(Number(b)));
+          });
+        } catch {
+          /* range rejected by RPC — skip this window, keep going */
+        }
+      }
+      lastScanBlockRef.current = latest;
+
+      // 2) Refresh current state for every known plot id (chunked reads).
+      const all = Array.from(allMintedIdsRef.current);
+      const map = plotMapRef.current;
+      const READ_CHUNK = 400;
+      for (let i = 0; i < all.length; i += READ_CHUNK) {
+        const slice = all.slice(i, i + READ_CHUNK);
+        try {
+          const res = (await publicClient.readContract({
+            address: baseBoardAddress,
+            abi: baseBoardAbi,
+            functionName: "getPlotsBatch",
+            args: [slice.map((n) => BigInt(n))],
+          })) as readonly Plot[];
+          res.forEach((plot, j) => {
+            const id = slice[j];
+            if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
+            else map.delete(id);
+          });
+        } catch {
+          /* keep prior data for this chunk */
+        }
+      }
+      dirtyRef.current = true;
+      forceTick((t) => t + 1);
+    } catch {
+      /* rpc unavailable — keep whatever we have */
+    } finally {
+      globalLoadingRef.current = false;
+    }
+  }, [publicClient]);
+
+  // Initial global load + light polling so other users' buys/listings appear
+  // without a manual refresh, at every zoom level.
+  useEffect(() => {
+    void loadAllMinted();
+    const t = setInterval(() => void loadAllMinted(), 30_000);
+    return () => clearInterval(t);
+  }, [loadAllMinted]);
+
+  // Re-scan after our own tx settles so changes reflect immediately.
+  useEffect(() => {
+    void loadAllMinted();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNonce]);
 
   // Reload when data is invalidated by a settled tx. We re-read the visible
   // viewport immediately (no debounce, no full clear) so ownership/status
@@ -1000,16 +1114,11 @@ export function BaseBoardCanvas() {
   );
 
   const recenter = useCallback(() => {
-    const cam = cameraRef.current;
-    const { width, height } = sizeRef.current;
-    cam.scale = clamp(fitScale() * 6, MIN_SCALE_FLOOR, MAX_SCALE);
-    cam.camX = GRID_SIZE / 2 - width / cam.scale / 2;
-    cam.camY = GRID_SIZE / 2 - height / cam.scale / 2;
+    fitWholeBoard();
     clampCamera();
-    setZoomLabel(cam.scale);
     dirtyRef.current = true;
     scheduleLoad();
-  }, [clampCamera, fitScale, scheduleLoad]);
+  }, [clampCamera, fitWholeBoard, scheduleLoad]);
 
   const cursorClass = useMemo(() => {
     if (tool === "select") return "cursor-crosshair";

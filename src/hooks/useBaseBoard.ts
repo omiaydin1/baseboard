@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import {
+  useChainId,
   useReadContract,
   useWatchContractEvent,
   useWriteContract,
@@ -9,6 +10,7 @@ import {
 } from "wagmi";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import {
+  ACTIVE_CHAIN_ID,
   DISPLAY_MAX_PLOTS,
   IS_CONTRACT_CONFIGURED,
   ZERO_ADDRESS,
@@ -112,6 +114,7 @@ export function usePlotsByOwner(account?: `0x${string}`) {
  */
 export function useBaseBoardWrite() {
   const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
+  const chainId = useChainId();
   const {
     writeContract,
     writeContractAsync,
@@ -129,6 +132,26 @@ export function useBaseBoardWrite() {
     if (isSuccess) bumpRefresh();
   }, [isSuccess, bumpRefresh]);
 
+  // Enforce Base-only writes: reject before signing if the wallet is on the
+  // wrong chain, and always pin the tx to the active chain so wagmi guards it.
+  // Typed as the full generic writer so call-site argument inference (e.g. the
+  // payable `value` on `buyPlots`) is preserved.
+  type WriteAsync = typeof writeContractAsync;
+  const writeContractAsyncGuarded = useCallback<WriteAsync>(
+    ((variables, options) => {
+      if (chainId !== ACTIVE_CHAIN_ID) {
+        return Promise.reject(
+          new Error("Wrong network — switch to Base Mainnet to continue"),
+        );
+      }
+      return writeContractAsync(
+        { ...variables, chainId: ACTIVE_CHAIN_ID },
+        options,
+      );
+    }) as WriteAsync,
+    [writeContractAsync, chainId],
+  );
+
   const status = isPending
     ? "pending"
     : isConfirming
@@ -141,11 +164,12 @@ export function useBaseBoardWrite() {
 
   return {
     /**
-     * Typed wagmi writer. Call with the contract config inline so wagmi infers
-     * argument types from the literal `functionName`, e.g.
+     * Typed wagmi writer, guarded so it only transacts on Base Mainnet (8453).
+     * Call with the contract config inline so wagmi infers argument types from
+     * the literal `functionName`, e.g.
      * `writeContractAsync({ address, abi, functionName: "buyPlots", args: [ids], value })`.
      */
-    writeContractAsync,
+    writeContractAsync: writeContractAsyncGuarded,
     writeContract,
     hash,
     status,
