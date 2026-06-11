@@ -10,10 +10,10 @@
  */
 
 /** Hard cap on the data-URI length we are willing to store on-chain (bytes). */
-export const MAX_ONCHAIN_IMAGE_BYTES = 12 * 1024;
+export const MAX_ONCHAIN_IMAGE_BYTES = 60 * 1024;
 
 /** Target budget we try to hit while compressing (leaves room for a zone tag). */
-const TARGET_BYTES = 10 * 1024;
+const TARGET_BYTES = 56 * 1024;
 
 export interface CompressResult {
   /** The compressed image as a `data:` URI ready to store on-chain. */
@@ -57,16 +57,41 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
-/** Render `img` into a canvas scaled so its longest side is `maxDim`. */
+/**
+ * Render `img` into a canvas whose longest side is `maxDim`.
+ *
+ * When `aspect` (width / height) is provided the output canvas is shaped to
+ * that aspect ratio and the source image is *cover-fitted* (centred crop, no
+ * distortion) into it — so a banner uploaded for a multi-plot zone is stored
+ * already matching the zone's shape and the canvas renderer can stretch it 1:1.
+ * Without `aspect` the source's own aspect ratio is preserved.
+ */
 function encode(
   img: HTMLImageElement,
   maxDim: number,
   mime: string,
   quality: number,
+  aspect?: number,
 ): { dataUri: string; width: number; height: number } {
-  const ratio = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
-  const width = Math.max(1, Math.round(img.naturalWidth * ratio));
-  const height = Math.max(1, Math.round(img.naturalHeight * ratio));
+  let width: number;
+  let height: number;
+  if (aspect && aspect > 0) {
+    if (aspect >= 1) {
+      width = maxDim;
+      height = Math.max(1, Math.round(maxDim / aspect));
+    } else {
+      height = maxDim;
+      width = Math.max(1, Math.round(maxDim * aspect));
+    }
+  } else {
+    const ratio = Math.min(
+      1,
+      maxDim / Math.max(img.naturalWidth, img.naturalHeight),
+    );
+    width = Math.max(1, Math.round(img.naturalWidth * ratio));
+    height = Math.max(1, Math.round(img.naturalHeight * ratio));
+  }
+
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -74,7 +99,22 @@ function encode(
   if (!ctx) throw new Error("Canvas not supported");
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, 0, 0, width, height);
+
+  // Cover-fit: pick the centred source rectangle matching the dest aspect.
+  const destAspect = width / height;
+  const srcAspect = img.naturalWidth / img.naturalHeight;
+  let sx = 0;
+  let sy = 0;
+  let sw = img.naturalWidth;
+  let sh = img.naturalHeight;
+  if (srcAspect > destAspect) {
+    sw = Math.round(sh * destAspect);
+    sx = Math.round((img.naturalWidth - sw) / 2);
+  } else if (srcAspect < destAspect) {
+    sh = Math.round(sw / destAspect);
+    sy = Math.round((img.naturalHeight - sh) / 2);
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
   return { dataUri: canvas.toDataURL(mime, quality), width, height };
 }
 
@@ -83,17 +123,23 @@ function encode(
  * Tries decreasing quality, then decreasing dimensions, keeping the smallest
  * result. Always resolves; check `tooLarge` to know if it still won't fit.
  */
-export async function compressImageFile(file: File): Promise<CompressResult> {
+export async function compressImageFile(
+  file: File,
+  opts: { aspect?: number } = {},
+): Promise<CompressResult> {
   const img = await loadImage(file);
   const mime = supportsWebp() ? "image/webp" : "image/jpeg";
-  const dims = [320, 256, 200, 160, 128, 96, 64];
-  const qualities = [0.82, 0.7, 0.6, 0.5, 0.4, 0.3];
+  // Larger ladder now that the budget is 60 KB — maximises clarity, stepping
+  // down dimensions / quality only as needed to fit.
+  const dims = [640, 512, 420, 340, 280, 220, 180, 140, 100, 72];
+  const qualities = [0.9, 0.82, 0.72, 0.62, 0.52, 0.42, 0.32];
+  const { aspect } = opts;
 
   let smallest: { dataUri: string; width: number; height: number } | null = null;
 
   for (const maxDim of dims) {
     for (const q of qualities) {
-      const out = encode(img, maxDim, mime, q);
+      const out = encode(img, maxDim, mime, q, aspect);
       if (!smallest || out.dataUri.length < smallest.dataUri.length) {
         smallest = out;
       }

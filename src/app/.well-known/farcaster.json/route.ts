@@ -37,19 +37,22 @@ export function OPTIONS() {
 export function GET(req: Request) {
   const url = baseUrl(req);
 
-  const accountAssociation =
-    process.env.FARCASTER_HEADER &&
-    process.env.FARCASTER_PAYLOAD &&
-    process.env.FARCASTER_SIGNATURE
-      ? {
-          header: process.env.FARCASTER_HEADER,
-          payload: process.env.FARCASTER_PAYLOAD,
-          signature: process.env.FARCASTER_SIGNATURE,
-        }
-      : undefined;
+  // Signed proof of domain custody (generated via Warpcast's manifest tool for
+  // base-board-pixel.vercel.app). Env vars override for other domains.
+  const accountAssociation = {
+    header:
+      process.env.FARCASTER_HEADER ??
+      "eyJmaWQiOjEzNTY2NjIsInR5cGUiOiJhdXRoIiwia2V5IjoiMHgxNTUwQjBGRmY1NUVjMDU0NDgwMjREOTYxNmI5RDFFOTk5YTQ3RWYzIn0",
+    payload:
+      process.env.FARCASTER_PAYLOAD ??
+      "eyJkb21haW4iOiJiYXNlLWJvYXJkLXBpeGVsLnZlcmNlbC5hcHAifQ",
+    signature:
+      process.env.FARCASTER_SIGNATURE ??
+      "ZzxNz7F7o1DqSt/VQwsWDVCHzcetKGKSABALrz/cqU9uNfN3HMzm0NEhjmyMxPIT++hTbdaW/QFwSxw+3NeD/Bs=",
+  };
 
   const manifest = {
-    ...(accountAssociation ? { accountAssociation } : {}),
+    accountAssociation,
     frame: {
       version: "1",
       name: "BaseBoard",

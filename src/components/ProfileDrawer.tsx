@@ -575,6 +575,7 @@ function OwnedPlotRow({
             initialValue={plot?.imageUri ?? ""}
             busy={busy}
             onSave={onSaveImage}
+            aspect={1}
           />
         </div>
       )}
@@ -665,7 +666,12 @@ function MultiImagePanel({
         {selected.length} plot{selected.length === 1 ? "" : "s"} selected ·{" "}
         {zone.x2 - zone.x1 + 1}×{zone.y2 - zone.y1 + 1} area
       </p>
-      <ImageUploader busy={busy} onSave={onApply} saveLabel="Apply to selection" />
+      <ImageUploader
+        busy={busy}
+        onSave={onApply}
+        saveLabel="Apply to selection"
+        aspect={(zone.x2 - zone.x1 + 1) / (zone.y2 - zone.y1 + 1)}
+      />
     </div>
   );
 }
@@ -680,11 +686,19 @@ function ImageUploader({
   busy,
   onSave,
   saveLabel = "Save Image",
+  aspect,
 }: {
   initialValue?: string;
   busy: boolean;
   onSave: (uri: string) => void | Promise<void>;
   saveLabel?: string;
+  /**
+   * Target width/height of the destination area. When set (e.g. a multi-plot
+   * zone) the uploaded image is cover-fit compressed to that exact shape and
+   * the preview is rendered at the same ratio, so the user sees ONE image
+   * exactly as it will appear across the whole zone.
+   */
+  aspect?: number;
 }) {
   const [value, setValue] = useState(initialValue);
   const [error, setError] = useState<string | null>(null);
@@ -705,7 +719,7 @@ function ImageUploader({
     setCompressing(true);
     setValue("");
     try {
-      const res = await compressImageFile(file);
+      const res = await compressImageFile(file, { aspect });
       if (res.tooLarge) {
         setError(
           `That image is too detailed for on-chain storage (${(
@@ -794,13 +808,19 @@ function ImageUploader({
         <p className="text-xs font-semibold text-green-600">{info}</p>
       )}
 
-      {/* Preview */}
+      {/* Preview — shaped to the destination area so multi-plot zones show one
+          unified image exactly as it will render on the board. */}
       {value && !error && !compressing && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={previewSrc(value)}
           alt="preview"
-          className="h-28 w-full rounded-lg border border-blue-100 object-cover"
+          className="w-full rounded-lg border border-blue-100 object-cover"
+          style={
+            aspect
+              ? { aspectRatio: String(aspect), maxHeight: "14rem" }
+              : { height: "7rem" }
+          }
           onError={() => setError("That image could not be loaded")}
         />
       )}
