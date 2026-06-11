@@ -13,6 +13,7 @@ import {
   ACTIVE_CHAIN_ID,
   DISPLAY_MAX_PLOTS,
   IS_CONTRACT_CONFIGURED,
+  TARGET_CHAIN,
   ZERO_ADDRESS,
 } from "@/lib/constants";
 import type { Plot } from "@/lib/types";
