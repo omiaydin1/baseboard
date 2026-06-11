@@ -146,7 +146,7 @@ export function useBaseBoardWrite() {
         );
       }
       return writeContractAsync(
-        { ...variables, chainId: ACTIVE_CHAIN_ID },
+        { ...variables, chainId: ACTIVE_CHAIN_ID, chain: TARGET_CHAIN },
         options,
       );
     }) as WriteAsync,
