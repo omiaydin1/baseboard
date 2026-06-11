@@ -4,16 +4,17 @@ import { useCallback, useEffect } from "react";
 import {
   useChainId,
   useReadContract,
+  useSwitchChain,
   useWatchContractEvent,
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
+import { base } from "viem/chains";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import {
   ACTIVE_CHAIN_ID,
   DISPLAY_MAX_PLOTS,
   IS_CONTRACT_CONFIGURED,
-  TARGET_CHAIN,
   ZERO_ADDRESS,
 } from "@/lib/constants";
 import type { Plot } from "@/lib/types";
@@ -24,7 +25,6 @@ const sharedReadConfig = {
   abi: baseBoardAbi,
 } as const;
 
-/** Live "sold" / "remaining" counters with polling + event-driven refresh. */
 export function useBoardStats() {
   const { data, refetch, isLoading } = useReadContract({
     ...sharedReadConfig,
@@ -50,7 +50,6 @@ export function useBoardStats() {
   return { sold, remaining, isLoading, refetch };
 }
 
-/** Read a single plot's on-chain record. */
 export function usePlot(plotId: number | null) {
   const { refreshNonce } = useBoardStore();
   const enabled = IS_CONTRACT_CONFIGURED && plotId != null;
@@ -62,7 +61,6 @@ export function usePlot(plotId: number | null) {
     query: { enabled },
   });
 
-  // Refetch whenever a tx settles elsewhere in the app.
   useEffect(() => {
     if (enabled) void query.refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,7 +72,6 @@ export function usePlot(plotId: number | null) {
   return { plot, isOwned, ...query };
 }
 
-/** Read the escrowed offer a bidder has on a plot. */
 export function useOffer(plotId: number | null, bidder?: `0x${string}`) {
   const enabled = IS_CONTRACT_CONFIGURED && plotId != null && !!bidder;
   return useReadContract({
@@ -85,7 +82,6 @@ export function useOffer(plotId: number | null, bidder?: `0x${string}`) {
   });
 }
 
-/** All plot ids owned by an address. */
 export function usePlotsByOwner(account?: `0x${string}`) {
   const { refreshNonce } = useBoardStore();
   const enabled = IS_CONTRACT_CONFIGURED && !!account;
@@ -109,10 +105,6 @@ export function usePlotsByOwner(account?: `0x${string}`) {
   return { ids, ...query };
 }
 
-/**
- * Generic write helper that exposes a typed `write()` plus tx lifecycle flags
- * and bumps the global refresh nonce once the receipt confirms.
- */
 export function useBaseBoardWrite() {
   const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
   const chainId = useChainId();
@@ -124,6 +116,7 @@ export function useBaseBoardWrite() {
     error,
     reset,
   } = useWriteContract();
+  const { switchChainAsync } = useSwitchChain();
 
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
     hash,
@@ -133,24 +126,20 @@ export function useBaseBoardWrite() {
     if (isSuccess) bumpRefresh();
   }, [isSuccess, bumpRefresh]);
 
-  // Enforce Base-only writes: reject before signing if the wallet is on the
-  // wrong chain, and always pin the tx to the active chain so wagmi guards it.
-  // Typed as the full generic writer so call-site argument inference (e.g. the
-  // payable `value` on `buyPlots`) is preserved.
   type WriteAsync = typeof writeContractAsync;
   const writeContractAsyncGuarded = useCallback<WriteAsync>(
     ((variables, options) => {
-      if (chainId !== ACTIVE_CHAIN_ID) {
-        return Promise.reject(
-          new Error("Wrong network — switch to Base Mainnet to continue"),
+      const doWrite = () =>
+        writeContractAsync(
+          { ...variables, chainId: ACTIVE_CHAIN_ID, chain: base },
+          options,
         );
+      if (chainId !== ACTIVE_CHAIN_ID) {
+        return switchChainAsync({ chainId: ACTIVE_CHAIN_ID }).then(doWrite);
       }
-      return writeContractAsync(
-        { ...variables, chainId: ACTIVE_CHAIN_ID, chain: TARGET_CHAIN },
-        options,
-      );
+      return doWrite();
     }) as WriteAsync,
-    [writeContractAsync, chainId],
+    [writeContractAsync, switchChainAsync, chainId],
   );
 
   const status = isPending
@@ -164,12 +153,6 @@ export function useBaseBoardWrite() {
           : "idle";
 
   return {
-    /**
-     * Typed wagmi writer, guarded so it only transacts on Base Mainnet (8453).
-     * Call with the contract config inline so wagmi infers argument types from
-     * the literal `functionName`, e.g.
-     * `writeContractAsync({ address, abi, functionName: "buyPlots", args: [ids], value })`.
-     */
     writeContractAsync: writeContractAsyncGuarded,
     writeContract,
     hash,
