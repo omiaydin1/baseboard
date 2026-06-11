@@ -8,12 +8,12 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
-import { base } from "viem/chains";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import {
   ACTIVE_CHAIN_ID,
   DISPLAY_MAX_PLOTS,
   IS_CONTRACT_CONFIGURED,
+  TARGET_CHAIN,
   ZERO_ADDRESS,
 } from "@/lib/constants";
 import type { Plot } from "@/lib/types";
@@ -146,7 +146,7 @@ export function useBaseBoardWrite() {
         );
       }
       return writeContractAsync(
-        { ...variables, chainId: ACTIVE_CHAIN_ID, chain: base },
+        { ...variables, chainId: ACTIVE_CHAIN_ID, chain: TARGET_CHAIN },
         options,
       );
     }) as WriteAsync,
