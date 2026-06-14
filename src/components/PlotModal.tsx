@@ -8,7 +8,8 @@ import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { usePlot, useOffer, useBaseBoardWrite } from "@/hooks/useBaseBoard";
-import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
+import { baseBoardAbi } from "@/lib/contract";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
 
 export function PlotModal() {
@@ -17,6 +18,7 @@ export function PlotModal() {
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const { address, isConnected } = useAccount();
 
+  const cfg = useActiveChainConfig();
   const { plot, isOwned, isLoading } = usePlot(activePlotId);
   const { data: myOfferRaw } = useOffer(activePlotId, address);
   const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
@@ -43,7 +45,7 @@ export function PlotModal() {
   const onBuyNow = () =>
     run(() =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "buyListedPlot",
         args: [BigInt(activePlotId!)],
@@ -65,7 +67,7 @@ export function PlotModal() {
     }
     return run(() =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "placeOffer",
         args: [BigInt(activePlotId!)],
@@ -77,7 +79,7 @@ export function PlotModal() {
   const onCancelOffer = () =>
     run(() =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "cancelOffer",
         args: [BigInt(activePlotId!)],

@@ -1,5 +1,5 @@
 import { http, createConfig, createStorage, cookieStorage } from "wagmi";
-import { base, hardhat } from "wagmi/chains";
+import { base, celo, hardhat } from "wagmi/chains";
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
 import { DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
 
@@ -72,8 +72,10 @@ function installLocalProvider() {
 }
 
 /**
- * wagmi config restricted to Base Mainnet (8453). Supports Coinbase Wallet,
- * MetaMask / injected wallets, and (optionally) WalletConnect.
+ * wagmi config for Base Mainnet (8453) + Celo Mainnet (42220), running
+ * concurrently. Supports Coinbase Wallet, MetaMask / injected wallets, and
+ * (optionally) WalletConnect. Note: Coinbase Smart Wallet does not support
+ * Celo — the connect UI hides it while Celo is the active chain.
  */
 export function getWagmiConfig() {
   installLocalProvider();
@@ -110,8 +112,11 @@ export function getWagmiConfig() {
 
   return createConfig({
     ...shared,
-    chains: [base],
-    transports: { [base.id]: http() },
+    chains: [base, celo],
+    transports: {
+      [base.id]: http(),
+      [celo.id]: http(),
+    },
   });
 }
 
