@@ -7,19 +7,15 @@ import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useBaseBoardWrite } from "@/hooks/useBaseBoard";
-import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
-import {
-  IS_CONTRACT_CONFIGURED,
-  PLOT_PRICE_ETH,
-  ZERO_ADDRESS,
-} from "@/lib/constants";
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
+import { baseBoardAbi } from "@/lib/contract";
+import { ZERO_ADDRESS } from "@/lib/constants";
 import {
   bboxToPlotIds,
   normalizeBBox,
-  totalPriceEth,
-  totalPriceWei,
   xyFromPlotId,
 } from "@/lib/coords";
+import { formatEther } from "viem";
 import type { Plot } from "@/lib/types";
 
 const MAX_BUY = 400;
@@ -34,6 +30,7 @@ export function BuyModal() {
   const clearOptimisticPlots = useBoardStore((s) => s.clearOptimisticPlots);
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
+  const cfg = useActiveChainConfig();
   const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
 
   const [buyableIds, setBuyableIds] = useState<number[] | null>(null);
@@ -66,7 +63,7 @@ export function BuyModal() {
     if (!open || selectedIds.length === 0 || tooLarge) return;
     const ids = selectedIds;
 
-    if (!IS_CONTRACT_CONFIGURED || !publicClient) {
+    if (!cfg.isConfigured || !publicClient) {
       setBuyableIds(ids); // demo mode: treat all as buyable
       return;
     }
@@ -76,7 +73,7 @@ export function BuyModal() {
     (async () => {
       try {
         const result = (await publicClient.readContract({
-          address: baseBoardAddress,
+          address: cfg.contract,
           abi: baseBoardAbi,
           functionName: "getPlotsBatch",
           args: [ids.map((i) => BigInt(i))],
@@ -105,11 +102,11 @@ export function BuyModal() {
     setTxError(null);
     try {
       await writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "buyPlots",
         args: [buyableIds.map((i) => BigInt(i))],
-        value: totalPriceWei(buyableIds.length),
+        value: cfg.plotPriceWei * BigInt(buyableIds.length),
       });
     } catch (e) {
       setTxError(e instanceof Error ? e.message : "Transaction failed");
@@ -169,8 +166,8 @@ export function BuyModal() {
               </p>
             )}
             <p className="mt-1 text-slate-600">
-              {totalCount.toLocaleString()} plots selected · {PLOT_PRICE_ETH} ETH
-              each
+              {totalCount.toLocaleString()} plots selected ·{" "}
+              {cfg.plotPriceLabel} {cfg.nativeSymbol} each
             </p>
           </div>
 
@@ -203,7 +200,8 @@ export function BuyModal() {
                   Total
                 </p>
                 <p className="text-lg font-black text-base-blue">
-                  {totalPriceEth(buyCount)} ETH
+                  {formatEther(cfg.plotPriceWei * BigInt(buyCount))}{" "}
+                  {cfg.nativeSymbol}
                 </p>
               </div>
             </div>
