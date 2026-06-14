@@ -26,6 +26,41 @@ export const MAX_ONCHAIN_IMAGE_BYTES = 12 * 1024;
 /** Target budget we try to hit while compressing (leaves room for a zone tag). */
 const TARGET_BYTES = 10 * 1024;
 
+/**
+ * Resolution budget per plot cell. An image only ever needs enough pixels to
+ * look crisp across the *plots it covers* — a single plot is tiny on screen, so
+ * encoding it at a huge resolution just bloats the on-chain data URI (and gas)
+ * for no visible gain. We therefore size the encode to the selected bounding box.
+ */
+const PX_PER_PLOT = 80;
+/** Never encode a longest side larger than this, however big the selection. */
+const MAX_ZONE_DIM = 384;
+/** Smallest longest-side we'll ever drop to while squeezing under the budget. */
+const MIN_DIM = 48;
+
+/**
+ * Longest-side pixel target for an image that must cover a `plotsW × plotsH`
+ * block of plots. Scales with the selection so a 1×1 stays tiny while a wide
+ * banner gets more pixels — but always clamped so the data URI stays gas-safe.
+ */
+export function dimForPlots(plotsW: number, plotsH: number): number {
+  const longest = Math.max(1, Math.round(plotsW), Math.round(plotsH));
+  return Math.min(MAX_ZONE_DIM, Math.max(PX_PER_PLOT, longest * PX_PER_PLOT));
+}
+
+/** Build a descending longest-side ladder starting at `start`, down to MIN_DIM. */
+function dimLadder(start: number): number[] {
+  const top = Math.max(MIN_DIM, Math.min(Math.round(start), MAX_ZONE_DIM));
+  const out: number[] = [];
+  let d = top;
+  while (d > MIN_DIM) {
+    out.push(d);
+    d = Math.round(d * 0.82);
+  }
+  out.push(MIN_DIM);
+  return out;
+}
+
 export interface CompressResult {
   /** The compressed image as a `data:` URI ready to store on-chain. */
   dataUri: string;
@@ -136,21 +171,22 @@ function encode(
  */
 export async function compressImageFile(
   file: File,
-  opts: { aspect?: number } = {},
+  opts: { aspect?: number; maxDim?: number } = {},
 ): Promise<CompressResult> {
   const img = await loadImage(file);
   const mime = supportsWebp() ? "image/webp" : "image/jpeg";
+  const { aspect, maxDim } = opts;
   // Step dimensions / quality down until the data URI fits the on-chain budget
-  // (~10 KB target). Larger sizes simply cost too much gas to store.
-  const dims = [320, 256, 220, 192, 160, 128, 112, 96, 72, 56];
+  // (~10 KB target). The ladder starts at the resolution the *selected plots*
+  // actually need (so a 1×1 plot encodes tiny) and only shrinks from there.
+  const dims = dimLadder(maxDim ?? 320);
   const qualities = [0.84, 0.74, 0.64, 0.54, 0.44, 0.34, 0.28];
-  const { aspect } = opts;
 
   let smallest: { dataUri: string; width: number; height: number } | null = null;
 
-  for (const maxDim of dims) {
+  for (const dim of dims) {
     for (const q of qualities) {
-      const out = encode(img, maxDim, mime, q, aspect);
+      const out = encode(img, dim, mime, q, aspect);
       if (!smallest || out.dataUri.length < smallest.dataUri.length) {
         smallest = out;
       }

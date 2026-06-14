@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import { useAccount, usePublicClient } from "wagmi";
 import { Spinner } from "./Spinner";
@@ -8,11 +8,12 @@ import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
-import { IS_CONTRACT_CONFIGURED } from "@/lib/constants";
+import { IS_CONTRACT_CONFIGURED, ZERO_ADDRESS } from "@/lib/constants";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   compressImageFile,
+  dimForPlots,
   withZone,
   type Zone,
 } from "@/lib/image";
@@ -47,11 +48,6 @@ function previewSrc(ref: string): string {
 /** Turn a raw wallet/tx error into a short, human message. */
 function friendlyTxError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  
-  // 🔍 DEBUG OVERRIDE: Cüzdanın sakladığı gerçek hatayı okumak için maskeyi kaldırıyoruz
-  return "RAW ERROR: " + msg.slice(0, 300);
-
-  // eslint-disable-next-line no-unreachable
   if (/user rejected|rejected the request|user denied|denied/i.test(msg))
     return "Transaction cancelled in your wallet";
   if (/insufficient funds|insufficient resources|exceeds the balance/i.test(msg))
@@ -312,22 +308,30 @@ function OwnedPlotRow({
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
+  const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
   const { writeContractAsync, status, isSuccess, error } = useBaseBoardWrite();
 
   const [action, setAction] = useState<Action>("none");
   const [priceInput, setPriceInput] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
+  // Plot override to push onto the board the moment the tx confirms, so the
+  // change shows instantly without waiting for the next on-chain re-read.
+  const pendingOverrideRef = useRef<Record<number, Plot> | null>(null);
 
   const busy = status === "pending" || status === "confirming";
 
   useEffect(() => {
     if (isSuccess && pendingLabel) {
+      if (pendingOverrideRef.current) {
+        applyOptimisticPlots(pendingOverrideRef.current);
+        pendingOverrideRef.current = null;
+      }
       pushToast("success", `${pendingLabel} confirmed`);
       setPendingLabel(null);
       setAction("none");
     }
-  }, [isSuccess, pendingLabel, pushToast]);
+  }, [isSuccess, pendingLabel, pushToast, applyOptimisticPlots]);
 
   const submit = async (label: string, fn: () => Promise<unknown>) => {
     setLocalError(null);
@@ -354,9 +358,21 @@ function OwnedPlotRow({
     }
   };
 
+  /** Build a single-plot optimistic override from the current plot + changes. */
+  const override = (changes: Partial<Plot>): Record<number, Plot> => ({
+    [plotId]: {
+      owner: (address ?? plot?.owner ?? ZERO_ADDRESS) as `0x${string}`,
+      price: plot?.price ?? 0n,
+      isForSale: plot?.isForSale ?? false,
+      imageUri: plot?.imageUri ?? "",
+      ...changes,
+    },
+  });
+
   const onList = () => {
     const v = parsePrice();
     if (v == null) return;
+    pendingOverrideRef.current = override({ isForSale: true, price: v });
     void submit("Listing", () =>
       writeContractAsync({
         address: baseBoardAddress,
@@ -370,6 +386,7 @@ function OwnedPlotRow({
   const onUpdatePrice = () => {
     const v = parsePrice();
     if (v == null) return;
+    pendingOverrideRef.current = override({ isForSale: true, price: v });
     void submit("Price update", () =>
       writeContractAsync({
         address: baseBoardAddress,
@@ -380,7 +397,8 @@ function OwnedPlotRow({
     );
   };
 
-  const onCancel = () =>
+  const onCancel = () => {
+    pendingOverrideRef.current = override({ isForSale: false, price: 0n });
     void submit("Cancel listing", () =>
       writeContractAsync({
         address: baseBoardAddress,
@@ -389,6 +407,7 @@ function OwnedPlotRow({
         args: [BigInt(plotId)],
       }),
     );
+  };
 
   const onSaveImage = async (uri: string) => {
     const problem = await preflightImageUpdate(
@@ -402,14 +421,15 @@ function OwnedPlotRow({
       pushToast("error", problem);
       return;
     }
-    // Hardcoded gas overrides to prevent automated gas preflight check failures
+    // Let the wallet estimate gas: storing a (now tiny) data URI still costs far
+    // more than a flat 21k-style limit, so a hardcoded cap would itself revert.
+    pendingOverrideRef.current = override({ imageUri: uri.trim() });
     await submit("Image update", () =>
       writeContractAsync({
         address: baseBoardAddress,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
         args: [BigInt(plotId), uri.trim()],
-        gas: 300000n,
       }),
     );
   };
@@ -555,6 +575,7 @@ function OwnedPlotRow({
             busy={busy}
             onSave={onSaveImage}
             aspect={1}
+            maxDim={dimForPlots(1, 1)}
           />
         </div>
       )}
@@ -581,10 +602,12 @@ function MultiImagePanel({
   onDone: () => void;
 }) {
   const pushToast = useBoardStore((s) => s.pushToast);
+  const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const { writeContractAsync, status, isSuccess } = useBaseBoardWrite();
   const [pending, setPending] = useState(false);
+  const pendingOverrideRef = useRef<Record<number, Plot> | null>(null);
 
   const busy = pending || status === "pending" || status === "confirming";
 
@@ -598,14 +621,22 @@ function MultiImagePanel({
     };
   }, [selected]);
 
+  const plotsW = zone.x2 - zone.x1 + 1;
+  const plotsH = zone.y2 - zone.y1 + 1;
+
   const anchorId = useMemo(() => Math.min(...selected), [selected]);
 
   useEffect(() => {
     if (isSuccess && pending) {
+      if (pendingOverrideRef.current) {
+        applyOptimisticPlots(pendingOverrideRef.current);
+        pendingOverrideRef.current = null;
+      }
       pushToast("success", `Image applied across ${selected.length} plots`);
       setPending(false);
       onDone();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccess]);
 
   const onApply = async (uri: string) => {
@@ -620,6 +651,16 @@ function MultiImagePanel({
       pushToast("error", problem);
       return;
     }
+    // The image lives on the anchor plot with a `#bb` zone fragment; the canvas
+    // spans it across the whole selection. Render it optimistically on confirm.
+    pendingOverrideRef.current = {
+      [anchorId]: {
+        owner: (address ?? ZERO_ADDRESS) as `0x${string}`,
+        price: 0n,
+        isForSale: false,
+        imageUri: finalUri,
+      },
+    };
     setPending(true);
     try {
       await writeContractAsync({
@@ -627,11 +668,11 @@ function MultiImagePanel({
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
         args: [BigInt(anchorId), finalUri],
-        gas: 500000n,
       });
       pushToast("info", "Image submitted — waiting for confirmation…");
     } catch (e) {
       setPending(false);
+      pendingOverrideRef.current = null;
       pushToast("error", friendlyTxError(e));
     }
   };
@@ -640,13 +681,14 @@ function MultiImagePanel({
     <div className="border-t-2 border-blue-100 bg-white p-4 shadow-[0_-8px_20px_rgba(0,82,255,0.06)]">
       <p className="mb-2 text-sm font-bold text-base-blue">
         {selected.length} plot{selected.length === 1 ? "" : "s"} selected ·{" "}
-        {zone.x2 - zone.x1 + 1}×{zone.y2 - zone.y1 + 1} area
+        {plotsW}×{plotsH} area
       </p>
       <ImageUploader
         busy={busy}
         onSave={onApply}
         saveLabel="Apply to selection"
-        aspect={(zone.x2 - zone.x1 + 1) / (zone.y2 - zone.y1 + 1)}
+        aspect={plotsW / plotsH}
+        maxDim={dimForPlots(plotsW, plotsH)}
       />
     </div>
   );
@@ -658,12 +700,14 @@ function ImageUploader({
   onSave,
   saveLabel = "Save Image",
   aspect,
+  maxDim,
 }: {
   initialValue?: string;
   busy: boolean;
   onSave: (uri: string) => void | Promise<void>;
   saveLabel?: string;
   aspect?: number;
+  maxDim?: number;
 }) {
   const [value, setValue] = useState(initialValue);
   const [error, setError] = useState<string | null>(null);
@@ -684,7 +728,7 @@ function ImageUploader({
     setCompressing(true);
     setValue("");
     try {
-      const res = await compressImageFile(file, { aspect });
+      const res = await compressImageFile(file, { aspect, maxDim });
       if (res.tooLarge) {
         setError(
           `That image is too detailed for on-chain storage (${(

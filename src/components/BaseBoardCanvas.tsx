@@ -397,18 +397,21 @@ export function BaseBoardCanvas() {
         const isMine = me && plot.owner.toLowerCase() === me;
         const sx = cellToScreenX(x);
         const sy = cellToScreenY(y);
-        const marker = Math.max(cam.scale, 3);
+        const zoomedOut = cam.scale < IMAGE_MIN_SCALE;
+        // Enforce a minimum on-screen marker so a single plot never collapses to
+        // a sub-pixel dot when fully zoomed out, and use a stronger palette at
+        // low zoom so claimed/for-sale plots read clearly against the board.
+        const marker = Math.max(cam.scale, zoomedOut ? 3.5 : 3);
         ctx.fillStyle = plot.isForSale
-          ? "#60a5fa"
+          ? zoomedOut
+            ? "#0052ff"
+            : "#60a5fa"
           : isMine
             ? "#1d4ed8"
-            : "#bfdbfe";
+            : zoomedOut
+              ? "#93c5fd"
+              : "#bfdbfe";
         ctx.fillRect(sx, sy, marker, marker);
-        // For-sale plots get a saturated outline so they pop even as a dot.
-        if (plot.isForSale && cam.scale < IMAGE_MIN_SCALE) {
-          ctx.fillStyle = "#0052ff";
-          ctx.fillRect(sx, sy, Math.max(cam.scale, 1.5), Math.max(cam.scale, 1.5));
-        }
 
         if (plot.imageUri) {
           const key = `${plot.owner.toLowerCase()}|${plot.imageUri}`;
@@ -616,8 +619,10 @@ export function BaseBoardCanvas() {
           : BASEBOARD_DEPLOY_BLOCK;
 
       // 1) Discover newly-minted plot ids from PlotsPurchased logs (chunked to
-      //    respect RPC block-range limits).
-      const LOG_CHUNK = 40_000;
+      //    respect RPC block-range limits). Base's public RPC caps eth_getLogs
+      //    at a 10,000-block range, so a larger window makes EVERY request fail
+      //    and no plots ever load when zoomed out — keep this safely under 10k.
+      const LOG_CHUNK = 9_500;
       for (let start = from; start <= latest; start += LOG_CHUNK + 1) {
         const end = Math.min(start + LOG_CHUNK, latest);
         try {
@@ -656,6 +661,10 @@ export function BaseBoardCanvas() {
             if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
             else map.delete(id);
           });
+          // Paint progressively so plots appear as each chunk lands instead of
+          // only after the entire (possibly large) scan finishes.
+          dirtyRef.current = true;
+          forceTick((t) => t + 1);
         } catch {
           /* keep prior data for this chunk */
         }
