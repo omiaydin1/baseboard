@@ -9,11 +9,22 @@
  * budget before it is ever written to the contract.
  */
 
-/** Hard cap on the data-URI length we are willing to store on-chain (bytes). */
-export const MAX_ONCHAIN_IMAGE_BYTES = 60 * 1024;
+/**
+ * Hard cap on the data-URI length we store on-chain (bytes).
+ *
+ * Storing a string costs ~22,100 gas per 32-byte word, so on-chain bytes map
+ * almost linearly to gas: ~0.74M gas/KB (measured against the deployed
+ * contract). A 12 KB image is ~8.9M gas — the largest that Coinbase Smart
+ * Wallet / the Base bundler can reliably simulate; a 33 KB image runs out of
+ * gas and the wallet reports "execution reverted". So device uploads (which are
+ * embedded fully on-chain as data URIs) are capped here. Hosted http(s)/ipfs
+ * URLs are NOT subject to this — only their short URL string is stored — so
+ * paste a URL for high-resolution banners.
+ */
+export const MAX_ONCHAIN_IMAGE_BYTES = 12 * 1024;
 
 /** Target budget we try to hit while compressing (leaves room for a zone tag). */
-const TARGET_BYTES = 56 * 1024;
+const TARGET_BYTES = 10 * 1024;
 
 export interface CompressResult {
   /** The compressed image as a `data:` URI ready to store on-chain. */
@@ -129,10 +140,10 @@ export async function compressImageFile(
 ): Promise<CompressResult> {
   const img = await loadImage(file);
   const mime = supportsWebp() ? "image/webp" : "image/jpeg";
-  // Larger ladder now that the budget is 60 KB — maximises clarity, stepping
-  // down dimensions / quality only as needed to fit.
-  const dims = [640, 512, 420, 340, 280, 220, 180, 140, 100, 72];
-  const qualities = [0.9, 0.82, 0.72, 0.62, 0.52, 0.42, 0.32];
+  // Step dimensions / quality down until the data URI fits the on-chain budget
+  // (~10 KB target). Larger sizes simply cost too much gas to store.
+  const dims = [320, 256, 220, 192, 160, 128, 112, 96, 72, 56];
+  const qualities = [0.84, 0.74, 0.64, 0.54, 0.44, 0.34, 0.28];
   const { aspect } = opts;
 
   let smallest: { dataUri: string; width: number; height: number } | null = null;
