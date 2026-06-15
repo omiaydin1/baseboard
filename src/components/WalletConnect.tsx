@@ -14,6 +14,7 @@ import {
   Identity,
   Name,
 } from "@coinbase/onchainkit/identity";
+import { base } from "wagmi/chains";
 import {
   useAccount,
   useChainId,
@@ -37,6 +38,34 @@ function connectorLabel(c: Connector): string {
   if (c.id === "injected") return "MetaMask / Rabby / Browser Wallet";
   if (/walletconnect/i.test(c.id)) return "WalletConnect";
   return c.name;
+}
+
+/**
+ * Wallet icon for the modal list. Prefers the connector's own icon (EIP-6963
+ * wallets like MetaMask / OKX / Rainbow expose a data-URI `icon`); otherwise
+ * falls back to a neutral monogram tile so every row is visually aligned.
+ */
+function ConnectorIcon({ connector }: { connector: Connector }) {
+  const icon = connector.icon;
+  if (icon) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={icon}
+        alt=""
+        aria-hidden
+        className="h-7 w-7 shrink-0 rounded-lg object-contain"
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-base-blue/10 text-xs font-black text-base-blue"
+    >
+      {connectorLabel(connector).charAt(0).toUpperCase()}
+    </span>
+  );
 }
 
 /**
@@ -66,13 +95,13 @@ function ChainAwareWalletConnect() {
     return (
       <Wallet>
         <ConnectWallet className="!bg-base-blue !text-white !rounded-xl !px-4 !py-2 !font-semibold hover:!bg-base-dark">
-          <Avatar className="h-5 w-5" />
-          <Name />
+          <Avatar chain={base} className="h-5 w-5" />
+          <Name chain={base} />
         </ConnectWallet>
         <WalletDropdown>
-          <Identity className="px-4 pt-3 pb-2" hasCopyAddressOnClick>
-            <Avatar />
-            <Name />
+          <Identity className="px-4 pt-3 pb-2" chain={base} hasCopyAddressOnClick>
+            <Avatar chain={base} />
+            <Name chain={base} />
             <Address />
             <EthBalance />
           </Identity>
@@ -122,7 +151,10 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
               }}
               className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left font-semibold text-slate-800 transition hover:border-base-blue hover:bg-base-blue/5 disabled:opacity-60"
             >
-              <span>{connectorLabel(c)}</span>
+              <span className="flex min-w-0 items-center gap-3">
+                <ConnectorIcon connector={c} />
+                <span className="truncate">{connectorLabel(c)}</span>
+              </span>
               <span aria-hidden className="text-base-blue">
                 →
               </span>
