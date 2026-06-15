@@ -1,6 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect } from "react";
+import { createPortal } from "react-dom";
 
 export function Modal({
   open,
@@ -22,9 +23,12 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || typeof document === "undefined") return null;
 
-  return (
+  // Portal to <body> so the overlay is always centered on the viewport — an
+  // ancestor with `backdrop-blur`/`transform` (e.g. the header) would otherwise
+  // become the containing block for `position: fixed` and pin it to the top.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
@@ -55,6 +59,7 @@ export function Modal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

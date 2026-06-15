@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ConnectWallet,
   Wallet,
@@ -23,6 +23,7 @@ import {
 } from "wagmi";
 import { CELO_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
 import { shortAddress } from "@/lib/coords";
+import { useCeloName } from "@/hooks/useCeloName";
 import { Modal } from "./Modal";
 
 /** Whether a connector is Coinbase Wallet / Smart Wallet. */
@@ -57,8 +58,9 @@ function ChainAwareWalletConnect() {
   const { isConnected } = useAccount();
   const isCelo = chainId === CELO_CHAIN_ID;
 
-  // Connected: keep the legacy OnchainKit account dropdown on Base; on Celo use
-  // a plain address + disconnect control (OnchainKit identity is Base-only).
+  // Connected: keep the OnchainKit account dropdown on Base (resolves basenames,
+  // click toggles a dropdown with Disconnect). On Celo use a matching custom
+  // account button + dropdown (OnchainKit identity is Base-only).
   if (isConnected) {
     if (isCelo) return <CeloConnected />;
     return (
@@ -138,18 +140,121 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
   );
 }
 
-/** Connected state on Celo: address + disconnect. */
+/** Connected state on Celo: identity-resolving account button + dropdown. */
 function CeloConnected() {
   const { address } = useAccount();
   const { disconnect } = useDisconnect();
+  const celoName = useCeloName(address);
   return (
-    <button
-      type="button"
-      onClick={() => disconnect()}
-      className="rounded-xl bg-base-blue px-4 py-2 font-semibold text-white hover:bg-base-dark"
-    >
-      {shortAddress(address)} · Disconnect
-    </button>
+    <ConnectedAccount
+      address={address}
+      name={celoName}
+      onDisconnect={() => disconnect()}
+    />
+  );
+}
+
+/** Deterministic gradient "user icon" derived from the address. */
+function avatarGradient(addr?: string): string {
+  const a = (addr ?? "0x000000").toLowerCase();
+  const h1 = parseInt(a.slice(2, 8) || "0", 16) % 360;
+  const h2 = (h1 + 80) % 360;
+  return `linear-gradient(135deg, hsl(${h1} 70% 55%), hsl(${h2} 72% 45%))`;
+}
+
+/**
+ * Connected account control matching the Base layout: a blue button showing a
+ * clean avatar + resolved name (or short address). Clicking it toggles a
+ * dropdown holding the full address and the Disconnect action — no inline
+ * "· Disconnect" text on the button face.
+ */
+function ConnectedAccount({
+  address,
+  name,
+  onDisconnect,
+}: {
+  address?: `0x${string}`;
+  name?: string | null;
+  onDisconnect: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const label = name || shortAddress(address);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center gap-2 rounded-xl bg-base-blue px-3 py-2 font-semibold text-white hover:bg-base-dark"
+      >
+        <span
+          aria-hidden
+          className="h-5 w-5 shrink-0 rounded-full ring-2 ring-white/40"
+          style={{ background: avatarGradient(address) }}
+        />
+        <span className="max-w-[140px] truncate">{label}</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path
+            d="M6 9l6 6 6-6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 z-50 mt-2 w-60 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
+        >
+          <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-3">
+            <span
+              aria-hidden
+              className="h-8 w-8 shrink-0 rounded-full"
+              style={{ background: avatarGradient(address) }}
+            />
+            <div className="min-w-0">
+              {name && (
+                <p className="truncate text-sm font-semibold text-slate-800">
+                  {name}
+                </p>
+              )}
+              <p className="truncate font-mono text-xs text-slate-500">
+                {shortAddress(address)}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDisconnect();
+            }}
+            className="block w-full px-4 py-3 text-left text-sm font-semibold text-red-600 hover:bg-red-50"
+          >
+            Disconnect
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

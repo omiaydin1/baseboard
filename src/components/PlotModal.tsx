@@ -7,7 +7,12 @@ import { Modal } from "./Modal";
 import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
-import { usePlot, useOffer, useBaseBoardWrite } from "@/hooks/useBaseBoard";
+import {
+  usePlot,
+  useOffer,
+  useBaseBoardWrite,
+  useCoveringImage,
+} from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi } from "@/lib/contract";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
@@ -30,7 +35,25 @@ export function PlotModal() {
   const open = activePlotId != null;
   const coords = activePlotId != null ? xyFromPlotId(activePlotId) : null;
   const myOffer = (myOfferRaw as bigint | undefined) ?? 0n;
-  const plotLink = plot?.imageUri ? parseLink(plot.imageUri) : null;
+
+  // The plot's own image/link (set when this plot is the anchor of an image).
+  const ownImage = plot?.imageUri ? stripZone(plot.imageUri) : null;
+  const ownLink = plot?.imageUri ? parseLink(plot.imageUri) : null;
+
+  // A multi-plot image lives only on its anchor plot; any other covered pixel
+  // carries no metadata. Resolve the spanning image/link covering this pixel so
+  // clicking ANY pixel under a batch image shows the same destination link.
+  const needCover = !!plot && !!coords && (!ownImage || !ownLink);
+  const covering = useCoveringImage(
+    plot?.owner,
+    coords?.x ?? null,
+    coords?.y ?? null,
+    needCover,
+  );
+  const displayImage =
+    ownImage || (covering.imageUri ? stripZone(covering.imageUri) : null);
+  const plotLink = ownLink || covering.link;
+
   const isOwner =
     !!plot && !!address && plot.owner.toLowerCase() === address.toLowerCase();
   const busy = status === "pending" || status === "confirming";
@@ -115,10 +138,10 @@ export function PlotModal() {
             </p>
           ) : (
             <>
-              {plot?.imageUri && (
+              {displayImage && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={stripZone(plot.imageUri)}
+                  src={displayImage}
                   alt="plot artwork"
                   className="h-40 w-full rounded-xl border-2 border-blue-100 object-cover"
                 />

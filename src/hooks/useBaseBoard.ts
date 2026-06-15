@@ -21,6 +21,7 @@ import {
 import { useActiveChainConfig } from "./useActiveContract";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
+import { parseLink, parseZone } from "@/lib/image";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -121,6 +122,70 @@ export function usePlotsByOwner(account?: `0x${string}`) {
   );
 
   return { ids, ...query };
+}
+
+/**
+ * Resolve the image + link metadata covering a plot at (x, y). A multi-plot
+ * image lives on a single anchor plot with a `#bb=x1,y1,x2,y2` zone fragment
+ * that spans the whole selection, so a clicked pixel inside the zone (but not
+ * the anchor) carries no metadata of its own. This looks up the plot owner's
+ * plots and returns the spanning image/link whose zone covers (x, y) — so
+ * every covered pixel reads the same destination link with zero extra writes.
+ */
+export function useCoveringImage(
+  owner: `0x${string}` | undefined,
+  x: number | null,
+  y: number | null,
+  enabled: boolean,
+) {
+  const { refreshNonce } = useBoardStore();
+  const cfg = useActiveChainConfig();
+  const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
+  const canRun =
+    enabled && cfg.isConfigured && !!owner && x != null && y != null;
+
+  const ownerPlots = useReadContract({
+    ...sharedReadConfig,
+    functionName: "getPlotsByOwner",
+    args: owner ? [owner] : undefined,
+    query: { enabled: canRun },
+  });
+
+  const ids = (ownerPlots.data as readonly bigint[] | undefined) ?? [];
+
+  const batch = useReadContract({
+    ...sharedReadConfig,
+    functionName: "getPlotsBatch",
+    args: ids.length ? [Array.from(ids)] : undefined,
+    query: { enabled: canRun && ids.length > 0 },
+  });
+
+  useEffect(() => {
+    if (canRun) {
+      void ownerPlots.refetch();
+      void batch.refetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNonce]);
+
+  const plots = (batch.data as readonly Plot[] | undefined) ?? [];
+
+  let imageUri: string | null = null;
+  let link: string | null = null;
+  if (canRun && x != null && y != null) {
+    for (const p of plots) {
+      if (!p?.imageUri) continue;
+      const z = parseZone(p.imageUri);
+      if (!z) continue;
+      if (x >= z.x1 && x <= z.x2 && y >= z.y1 && y <= z.y2) {
+        imageUri = p.imageUri;
+        link = parseLink(p.imageUri);
+        break;
+      }
+    }
+  }
+
+  return { imageUri, link };
 }
 
 export function useBaseBoardWrite() {
