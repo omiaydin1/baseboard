@@ -7,14 +7,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { usePublicClient, useAccount } from "wagmi";
-import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
-import {
-  BASEBOARD_DEPLOY_BLOCK,
-  GRID_SIZE,
-  IS_CONTRACT_CONFIGURED,
-  ZERO_ADDRESS,
-} from "@/lib/constants";
+import { usePublicClient, useAccount, useChainId } from "wagmi";
+import { baseBoardAbi } from "@/lib/contract";
+import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { clamp, plotIdFromXY, xyFromPlotId } from "@/lib/coords";
 import { parseZone, stripZone } from "@/lib/image";
 import type { Plot } from "@/lib/types";
@@ -46,6 +42,8 @@ export function BaseBoardCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const publicClient = usePublicClient();
   const { address } = useAccount();
+  const chainId = useChainId();
+  const cfg = useActiveChainConfig();
 
   const openPlot = useBoardStore((s) => s.openPlot);
   const setBuySelection = useBoardStore((s) => s.setBuySelection);
@@ -59,6 +57,7 @@ export function BaseBoardCanvas() {
   const clearBasket = useBoardStore((s) => s.clearBasket);
   const setDirectBuyIds = useBoardStore((s) => s.setDirectBuyIds);
   const optimisticPlots = useBoardStore((s) => s.optimisticPlots);
+  const clearOptimisticPlots = useBoardStore((s) => s.clearOptimisticPlots);
 
   const [tool, setTool] = useState<Tool>("pan");
   const [zoomLabel, setZoomLabel] = useState(1);
@@ -545,7 +544,7 @@ export function BaseBoardCanvas() {
   // Data loading for the visible viewport (debounced on camera settle)
   // -------------------------------------------------------------------
   const loadViewport = useCallback(async () => {
-    if (!IS_CONTRACT_CONFIGURED || !publicClient) return;
+    if (!cfg.isConfigured || !publicClient) return;
     const cam = cameraRef.current;
     const { width, height } = sizeRef.current;
     const startX = Math.max(0, Math.floor(cam.camX));
@@ -567,7 +566,7 @@ export function BaseBoardCanvas() {
 
     try {
       const result = (await publicClient.readContract({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "getPlotsBatch",
         args: [ids],
@@ -587,7 +586,7 @@ export function BaseBoardCanvas() {
     } catch {
       /* read failed (rpc / not deployed) — keep prior data */
     }
-  }, [publicClient]);
+  }, [publicClient, cfg.isConfigured, cfg.contract]);
 
   // Debounce viewport loads.
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -608,7 +607,7 @@ export function BaseBoardCanvas() {
   const globalLoadingRef = useRef(false);
 
   const loadAllMinted = useCallback(async () => {
-    if (!IS_CONTRACT_CONFIGURED || !publicClient) return;
+    if (!cfg.isConfigured || !publicClient) return;
     if (globalLoadingRef.current) return;
     globalLoadingRef.current = true;
     try {
@@ -616,7 +615,7 @@ export function BaseBoardCanvas() {
       const from =
         lastScanBlockRef.current > 0
           ? lastScanBlockRef.current + 1
-          : BASEBOARD_DEPLOY_BLOCK;
+          : cfg.deployBlock;
 
       // 1) Discover newly-minted plot ids from PlotsPurchased logs (chunked to
       //    respect RPC block-range limits). Base's public RPC caps eth_getLogs
@@ -627,7 +626,7 @@ export function BaseBoardCanvas() {
         const end = Math.min(start + LOG_CHUNK, latest);
         try {
           const logs = await publicClient.getContractEvents({
-            address: baseBoardAddress,
+            address: cfg.contract,
             abi: baseBoardAbi,
             eventName: "PlotsPurchased",
             fromBlock: BigInt(start),
@@ -651,7 +650,7 @@ export function BaseBoardCanvas() {
         const slice = all.slice(i, i + READ_CHUNK);
         try {
           const res = (await publicClient.readContract({
-            address: baseBoardAddress,
+            address: cfg.contract,
             abi: baseBoardAbi,
             functionName: "getPlotsBatch",
             args: [slice.map((n) => BigInt(n))],
@@ -676,7 +675,25 @@ export function BaseBoardCanvas() {
     } finally {
       globalLoadingRef.current = false;
     }
-  }, [publicClient]);
+  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock]);
+
+  // State isolation: when the active chain changes (Base <-> Celo), wipe every
+  // cached plot, the minted-id set, the log-scan cursor, decoded images and any
+  // optimistic overrides so we never show one network's board on another. The
+  // load effects below re-run automatically (their callbacks are rebuilt from
+  // the new chain's contract) and repopulate from the active network.
+  const prevChainRef = useRef(chainId);
+  useEffect(() => {
+    if (prevChainRef.current === chainId) return;
+    prevChainRef.current = chainId;
+    plotMapRef.current.clear();
+    allMintedIdsRef.current.clear();
+    lastScanBlockRef.current = 0;
+    imageCacheRef.current.clear();
+    clearOptimisticPlots();
+    dirtyRef.current = true;
+    forceTick((t) => t + 1);
+  }, [chainId, clearOptimisticPlots]);
 
   // Initial global load + light polling so other users' buys/listings appear
   // without a manual refresh, at every zoom level.

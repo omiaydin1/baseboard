@@ -230,9 +230,12 @@ export interface Zone {
   y2: number;
 }
 
-const ZONE_RE = /#bb=(\d+),(\d+),(\d+),(\d+)$/;
+// `bb`/`link` can appear in any order in the fragment, each prefixed by `#`
+// or `&`, e.g. `data:image/webp;base64,xxxx#bb=10,10,19,19&link=https%3A%2F%2F…`.
+const ZONE_RE = /[#&]bb=(\d+),(\d+),(\d+),(\d+)/;
+const LINK_RE = /[#&]link=([^&]+)/;
 
-/** Parse a `#bb=x1,y1,x2,y2` zone fragment, or null if absent. */
+/** Parse a `bb=x1,y1,x2,y2` zone fragment, or null if absent. */
 export function parseZone(uri: string): Zone | null {
   const m = uri.match(ZONE_RE);
   if (!m) return null;
@@ -244,12 +247,105 @@ export function parseZone(uri: string): Zone | null {
   };
 }
 
-/** Remove any zone fragment, returning the bare image reference. */
+/** Parse a `link=<encoded url>` fragment, or null if absent. */
+export function parseLink(uri: string): string | null {
+  const m = uri.match(LINK_RE);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+}
+
+/** Remove any metadata fragment, returning the bare image reference. */
 export function stripZone(uri: string): string {
-  return uri.replace(ZONE_RE, "");
+  const i = uri.indexOf("#");
+  return i === -1 ? uri : uri.slice(0, i);
 }
 
 /** Append (or replace) a zone fragment on an image reference. */
 export function withZone(uri: string, z: Zone): string {
-  return `${stripZone(uri)}#bb=${z.x1},${z.y1},${z.x2},${z.y2}`;
+  return withMeta(uri, { zone: z });
+}
+
+/**
+ * Build an image reference carrying optional zone + link metadata in a single
+ * `#`-fragment. Both are kept on-chain in the existing `imageUri` string, so no
+ * contract change is needed.
+ */
+export function withMeta(
+  uri: string,
+  meta: { zone?: Zone | null; link?: string | null },
+): string {
+  const base = stripZone(uri);
+  const parts: string[] = [];
+  if (meta.zone) {
+    const { x1, y1, x2, y2 } = meta.zone;
+    parts.push(`bb=${x1},${y1},${x2},${y2}`);
+  }
+  if (meta.link) parts.push(`link=${encodeURIComponent(meta.link)}`);
+  return parts.length ? `${base}#${parts.join("&")}` : base;
+}
+
+// ---------------------------------------------------------------------------
+// Content Security Guard for pixel links
+//
+// Block links pointing at restricted categories (pornography, drugs/narcotics,
+// alcohol, gambling/betting) or obvious phishing structures BEFORE a mint /
+// image-save transaction is initiated. Pure client-side validation.
+// ---------------------------------------------------------------------------
+
+const BLOCKED_KEYWORDS = [
+  // pornography / adult
+  "porn", "xxx", "xvideos", "xhamster", "pornhub", "redtube", "youporn",
+  "onlyfans", "brazzers", "nsfw", "hentai", "camgirl", "escort", "sexcam",
+  "adultfriendfinder",
+  // drugs / narcotics
+  "cocaine", "heroin", "meth", "cannabis", "marijuana", "weed-shop",
+  "buyweed", "lsd", "mdma", "narcotic", "drugstore-illegal", "darknet",
+  // alcohol / liquor
+  "liquorstore", "buyalcohol", "vodka-shop", "whiskey-shop", "beershop",
+  "winestore",
+  // gambling / betting
+  "casino", "betting", "gambl", "poker", "roulette", "slots", "sportsbet",
+  "bet365", "1xbet", "stake.com", "pokerstars",
+  // phishing / malware
+  "phishing", "free-crypto", "airdrop-claim", "wallet-verify", "seed-phrase",
+  "metamask-support", "connect-wallet-verify", "claim-reward",
+];
+
+export interface UrlValidationResult {
+  ok: boolean;
+  url?: string;
+  reason?: string;
+}
+
+/**
+ * Validate a user-supplied destination link. Returns the normalized URL when
+ * safe, or `ok:false` for blocked/malformed input. Empty input is allowed
+ * (links are optional) and returns `ok:true` with no url.
+ */
+export function validateLinkUrl(raw: string): UrlValidationResult {
+  const value = raw.trim();
+  if (!value) return { ok: true };
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, reason: "malformed" };
+  }
+
+  // Only allow real web links.
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, reason: "protocol" };
+  }
+
+  const haystack = `${parsed.hostname}${parsed.pathname}${parsed.search}`.toLowerCase();
+  if (BLOCKED_KEYWORDS.some((kw) => haystack.includes(kw))) {
+    return { ok: false, reason: "blocked" };
+  }
+
+  return { ok: true, url: parsed.toString() };
 }

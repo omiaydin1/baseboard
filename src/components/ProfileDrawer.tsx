@@ -7,14 +7,18 @@ import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
-import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
-import { IS_CONTRACT_CONFIGURED, ZERO_ADDRESS } from "@/lib/constants";
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
+import { baseBoardAbi } from "@/lib/contract";
+import { ZERO_ADDRESS } from "@/lib/constants";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   compressImageFile,
   dimForPlots,
-  withZone,
+  parseLink,
+  stripZone,
+  validateLinkUrl,
+  withMeta,
   type Zone,
 } from "@/lib/image";
 import type { Plot } from "@/lib/types";
@@ -69,6 +73,7 @@ type MinimalPublicClient = {
  */
 async function preflightImageUpdate(
   publicClient: MinimalPublicClient | null | undefined,
+  contract: `0x${string}`,
   account: `0x${string}` | undefined,
   plotId: number,
   uri: string,
@@ -81,7 +86,7 @@ async function preflightImageUpdate(
   if (!publicClient) return null;
   try {
     const plot = (await publicClient.readContract({
-      address: baseBoardAddress,
+      address: contract,
       abi: baseBoardAbi,
       functionName: "getPlot",
       args: [BigInt(plotId)],
@@ -101,6 +106,7 @@ export function ProfileDrawer() {
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
+  const cfg = useActiveChainConfig();
   const { ids, isLoading } = usePlotsByOwner(address);
 
   const [details, setDetails] = useState<Record<number, Plot>>({});
@@ -118,7 +124,7 @@ export function ProfileDrawer() {
   }, [profileOpen]);
 
   useEffect(() => {
-    if (!IS_CONTRACT_CONFIGURED || !publicClient || ids.length === 0) {
+    if (!cfg.isConfigured || !publicClient || ids.length === 0) {
       setDetails({});
       return;
     }
@@ -126,7 +132,7 @@ export function ProfileDrawer() {
     (async () => {
       try {
         const result = (await publicClient.readContract({
-          address: baseBoardAddress,
+          address: cfg.contract,
           abi: baseBoardAbi,
           functionName: "getPlotsBatch",
           args: [ids.map((i) => BigInt(i))],
@@ -144,7 +150,8 @@ export function ProfileDrawer() {
     return () => {
       cancelled = true;
     };
-  }, [ids.join(","), refreshNonce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids.join(","), refreshNonce, cfg.contract, cfg.isConfigured]);
 
   return (
     <>
@@ -213,11 +220,10 @@ export function ProfileDrawer() {
               </p>
               <WalletConnect />
             </div>
-          ) : !IS_CONTRACT_CONFIGURED ? (
+          ) : !cfg.isConfigured ? (
             <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700">
-              Contract not configured. Deploy BaseBoard.sol and set{" "}
-              <code>NEXT_PUBLIC_BASEBOARD_CONTRACT_ADDRESS</code> to manage your
-              plots.
+              No BaseBoard contract is configured on {cfg.name}. Deploy
+              BaseBoard.sol on this network to manage your plots here.
             </p>
           ) : isLoading ? (
             <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -305,6 +311,7 @@ function OwnedPlotRow({
   const { x, y } = xyFromPlotId(plotId);
   const { address } = useAccount();
   const publicClient = usePublicClient();
+  const cfg = useActiveChainConfig();
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
@@ -375,7 +382,7 @@ function OwnedPlotRow({
     pendingOverrideRef.current = override({ isForSale: true, price: v });
     void submit("Listing", () =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "listPlot",
         args: [BigInt(plotId), v],
@@ -389,7 +396,7 @@ function OwnedPlotRow({
     pendingOverrideRef.current = override({ isForSale: true, price: v });
     void submit("Price update", () =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "updatePlotPrice",
         args: [BigInt(plotId), v],
@@ -401,7 +408,7 @@ function OwnedPlotRow({
     pendingOverrideRef.current = override({ isForSale: false, price: 0n });
     void submit("Cancel listing", () =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "cancelListing",
         args: [BigInt(plotId)],
@@ -409,12 +416,14 @@ function OwnedPlotRow({
     );
   };
 
-  const onSaveImage = async (uri: string) => {
+  const onSaveImage = async (uri: string, link?: string | null) => {
+    const finalUri = withMeta(uri.trim(), { link });
     const problem = await preflightImageUpdate(
       publicClient as MinimalPublicClient | undefined,
+      cfg.contract,
       address,
       plotId,
-      uri,
+      finalUri,
     );
     if (problem) {
       setLocalError(problem);
@@ -423,13 +432,13 @@ function OwnedPlotRow({
     }
     // Let the wallet estimate gas: storing a (now tiny) data URI still costs far
     // more than a flat 21k-style limit, so a hardcoded cap would itself revert.
-    pendingOverrideRef.current = override({ imageUri: uri.trim() });
+    pendingOverrideRef.current = override({ imageUri: finalUri });
     await submit("Image update", () =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
-        args: [BigInt(plotId), uri.trim()],
+        args: [BigInt(plotId), finalUri],
       }),
     );
   };
@@ -605,6 +614,7 @@ function MultiImagePanel({
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
   const { address } = useAccount();
   const publicClient = usePublicClient();
+  const cfg = useActiveChainConfig();
   const { writeContractAsync, status, isSuccess } = useBaseBoardWrite();
   const [pending, setPending] = useState(false);
   const pendingOverrideRef = useRef<Record<number, Plot> | null>(null);
@@ -639,10 +649,11 @@ function MultiImagePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccess]);
 
-  const onApply = async (uri: string) => {
-    const finalUri = withZone(uri, zone);
+  const onApply = async (uri: string, link?: string | null) => {
+    const finalUri = withMeta(uri, { zone, link });
     const problem = await preflightImageUpdate(
       publicClient as MinimalPublicClient | undefined,
+      cfg.contract,
       address,
       anchorId,
       finalUri,
@@ -664,7 +675,7 @@ function MultiImagePanel({
     setPending(true);
     try {
       await writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "updatePlotImage",
         args: [BigInt(anchorId), finalUri],
@@ -704,12 +715,13 @@ function ImageUploader({
 }: {
   initialValue?: string;
   busy: boolean;
-  onSave: (uri: string) => void | Promise<void>;
+  onSave: (uri: string, link?: string | null) => void | Promise<void>;
   saveLabel?: string;
   aspect?: number;
   maxDim?: number;
 }) {
-  const [value, setValue] = useState(initialValue);
+  const [value, setValue] = useState(() => stripZone(initialValue));
+  const [link, setLink] = useState(() => parseLink(initialValue) ?? "");
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [compressing, setCompressing] = useState(false);
@@ -749,15 +761,23 @@ function ImageUploader({
   };
 
   const validationError = validateImageRef(value);
-  const ready = !busy && !compressing && validationError === null;
+  const linkCheck = validateLinkUrl(link);
+  const ready =
+    !busy && !compressing && validationError === null && linkCheck.ok;
 
   const handleSave = async () => {
     if (validationError) {
       setError(validationError);
       return;
     }
+    if (!linkCheck.ok) {
+      setError(
+        "Invalid or restricted URL layout detected. Please provide a safe destination link.",
+      );
+      return;
+    }
     setError(null);
-    await onSave(value.trim());
+    await onSave(value.trim(), linkCheck.url ?? null);
   };
 
   return (
@@ -828,6 +848,33 @@ function ImageUploader({
           onError={() => setError("That image could not be loaded")}
         />
       )}
+
+      <div className="space-y-1 pt-1">
+        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          Link (optional)
+        </label>
+        <input
+          type="url"
+          inputMode="url"
+          value={link}
+          onChange={(e) => {
+            setLink(e.target.value);
+            setError(null);
+          }}
+          placeholder="https://your-site.com — opens when the pixel is clicked"
+          className={`w-full rounded-lg border-2 px-3 py-1.5 text-sm focus:outline-none ${
+            link && !linkCheck.ok
+              ? "border-red-300 focus:border-red-400"
+              : "border-blue-100 focus:border-base-blue"
+          }`}
+        />
+        {link && !linkCheck.ok && (
+          <p className="text-[11px] font-medium text-red-600">
+            Invalid or restricted URL layout detected. Please provide a safe
+            destination link.
+          </p>
+        )}
+      </div>
 
       {error && (
         <p className="break-words text-xs font-medium text-red-600">{error}</p>

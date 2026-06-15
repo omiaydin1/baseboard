@@ -23,7 +23,10 @@ async function main() {
 
   const BaseBoard = await hre.ethers.getContractFactory("BaseBoard");
   console.log("Deploying...");
-  const board = await BaseBoard.deploy();
+  // Base Mainnet: 0.00005 ETH per plot, original treasury.
+  const plotPrice = hre.ethers.parseEther("0.00005");
+  const treasury = "0xce835359202acbB4a10d9a2f97a72E6d0B76f1e2";
+  const board = await BaseBoard.deploy(plotPrice, treasury);
   await board.waitForDeployment();
 
   const address = await board.getAddress();

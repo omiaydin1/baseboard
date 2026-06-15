@@ -4,6 +4,7 @@ import { BaseBoardCanvas } from "@/components/BaseBoardCanvas";
 import { HangingHeader } from "@/components/HangingHeader";
 import { StatsDashboard } from "@/components/StatsDashboard";
 import { WalletConnect } from "@/components/WalletConnect";
+import { NetworkSwitcher } from "@/components/NetworkSwitcher";
 import { NetworkGuard } from "@/components/NetworkGuard";
 import { ProfileDrawer } from "@/components/ProfileDrawer";
 import { PlotModal } from "@/components/PlotModal";
@@ -11,9 +12,11 @@ import { BuyModal } from "@/components/BuyModal";
 import { Legend } from "@/components/Legend";
 import { Toaster } from "@/components/Toaster";
 import { useBoardStore } from "@/store/useBoardStore";
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
 
 export default function Home() {
   const toggleProfile = useBoardStore((s) => s.toggleProfile);
+  const cfg = useActiveChainConfig();
 
   return (
     <div className="flex h-screen flex-col bg-white">
@@ -33,6 +36,7 @@ export default function Home() {
             >
               My Profile
             </button>
+            <NetworkSwitcher />
             <WalletConnect />
           </div>
         </div>
@@ -51,7 +55,7 @@ export default function Home() {
         <div className="my-2 flex w-full max-w-7xl items-center justify-between">
           <Legend />
           <p className="text-xs text-slate-400">
-            BaseBoard · 3162 × 3162 grid · Base Mainnet (8453)
+            BaseBoard · 3162 × 3162 grid · {cfg.name} ({cfg.chainId})
           </p>
         </div>
       </main>
