@@ -119,10 +119,13 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
   const [open, setOpen] = useState(false);
   const { connect, connectors, isPending } = useConnect();
 
-  // De-dupe by id and, on Celo, drop Coinbase (unsupported).
+  // De-dupe by id and drop the generic/duplicate rows: the explicit per-wallet
+  // (EIP-6963) rows below already cover MetaMask / Rabby / OKX / Rainbow, and
+  // the generic "Coinbase Smart Wallet" row is redundant here.
   const seen = new Set<string>();
   const list = connectors.filter((c) => {
-    if (hideCoinbase && isCoinbaseConnector(c.id, c.name)) return false;
+    if (c.id === "injected") return false;
+    if (isCoinbaseConnector(c.id, c.name)) return false;
     if (seen.has(c.id)) return false;
     seen.add(c.id);
     return true;
