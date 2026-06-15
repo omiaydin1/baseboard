@@ -111,6 +111,16 @@ export const CELO_DEPLOY_BLOCK = Number(
   process.env.NEXT_PUBLIC_CELO_DEPLOY_BLOCK || "69652905",
 );
 
+/**
+ * Optional ENS-compatible universal resolver for Celo Name Service (.celo)
+ * reverse lookups. Celo has no single canonical public reverse registry, so
+ * this is env-driven: when an address is provided, a connected Celo account is
+ * resolved to its human-readable name; otherwise the UI falls back to the short
+ * hex address. (Base basenames resolve out of the box via OnchainKit.)
+ */
+export const CELO_NAME_UNIVERSAL_RESOLVER = (process.env
+  .NEXT_PUBLIC_CELO_NAME_RESOLVER || "") as string;
+
 /** Per-chain configuration consumed everywhere reads/writes happen. */
 export interface ChainConfig {
   chainId: number;
