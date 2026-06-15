@@ -81,10 +81,13 @@ export const WALLETCONNECT_PROJECT_ID =
 export const BASE_CHAIN_ID = base.id; // 8453
 export const CELO_CHAIN_ID = celo.id; // 42220
 
-/** Celo Mainnet contract — placeholder until a BaseBoard is deployed there. */
+/**
+ * Celo Mainnet BaseBoard — live contract deployed at block 69652905
+ * (price 1.3 CELO, treasury 0x71aad…812b). Override via env if redeployed.
+ */
 export const CELO_CONTRACT_ADDRESS = (process.env
   .NEXT_PUBLIC_CELO_CONTRACT_ADDRESS ||
-  "0x71aad1110dfd8f60249cd45ce4fb05163b6f812b") as `0x${string}`;
+  "0x7b5E66cD88305aB33CE2c2C400167B7fFF348a23") as `0x${string}`;
 
 /**
  * Treasury that receives Celo mint fees. The real routing lives *inside* the
@@ -103,9 +106,9 @@ export const CELO_TREASURY_ADDRESS = (process.env
 export const CELO_PLOT_PRICE = process.env.NEXT_PUBLIC_CELO_PLOT_PRICE || "1.3";
 export const CELO_PLOT_PRICE_WEI = parseEther(CELO_PLOT_PRICE);
 
-/** Block the Celo BaseBoard was deployed at (0 until deployed). */
+/** Block the Celo BaseBoard was deployed at (used as the log-scan floor). */
 export const CELO_DEPLOY_BLOCK = Number(
-  process.env.NEXT_PUBLIC_CELO_DEPLOY_BLOCK || "0",
+  process.env.NEXT_PUBLIC_CELO_DEPLOY_BLOCK || "69652905",
 );
 
 /** Per-chain configuration consumed everywhere reads/writes happen. */
