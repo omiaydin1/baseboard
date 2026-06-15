@@ -8,8 +8,10 @@ import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { usePlot, useOffer, useBaseBoardWrite } from "@/hooks/useBaseBoard";
-import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
+import { baseBoardAbi } from "@/lib/contract";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
+import { parseLink, stripZone } from "@/lib/image";
 
 export function PlotModal() {
   const activePlotId = useBoardStore((s) => s.activePlotId);
@@ -17,6 +19,7 @@ export function PlotModal() {
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const { address, isConnected } = useAccount();
 
+  const cfg = useActiveChainConfig();
   const { plot, isOwned, isLoading } = usePlot(activePlotId);
   const { data: myOfferRaw } = useOffer(activePlotId, address);
   const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
@@ -27,6 +30,7 @@ export function PlotModal() {
   const open = activePlotId != null;
   const coords = activePlotId != null ? xyFromPlotId(activePlotId) : null;
   const myOffer = (myOfferRaw as bigint | undefined) ?? 0n;
+  const plotLink = plot?.imageUri ? parseLink(plot.imageUri) : null;
   const isOwner =
     !!plot && !!address && plot.owner.toLowerCase() === address.toLowerCase();
   const busy = status === "pending" || status === "confirming";
@@ -43,7 +47,7 @@ export function PlotModal() {
   const onBuyNow = () =>
     run(() =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "buyListedPlot",
         args: [BigInt(activePlotId!)],
@@ -65,7 +69,7 @@ export function PlotModal() {
     }
     return run(() =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "placeOffer",
         args: [BigInt(activePlotId!)],
@@ -77,7 +81,7 @@ export function PlotModal() {
   const onCancelOffer = () =>
     run(() =>
       writeContractAsync({
-        address: baseBoardAddress,
+        address: cfg.contract,
         abi: baseBoardAbi,
         functionName: "cancelOffer",
         args: [BigInt(activePlotId!)],
@@ -114,7 +118,7 @@ export function PlotModal() {
               {plot?.imageUri && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={plot.imageUri}
+                  src={stripZone(plot.imageUri)}
                   alt="plot artwork"
                   className="h-40 w-full rounded-xl border-2 border-blue-100 object-cover"
                 />
@@ -142,6 +146,21 @@ export function PlotModal() {
                     <dt className="text-slate-500">Asking price</dt>
                     <dd className="font-black text-base-blue">
                       {formatEther(plot.price)} ETH
+                    </dd>
+                  </div>
+                )}
+                {plotLink && (
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-slate-500">Link</dt>
+                    <dd className="min-w-0 text-right">
+                      <a
+                        href={plotLink}
+                        target="_blank"
+                        rel="noopener noreferrer nofollow"
+                        className="block truncate font-semibold text-base-blue hover:underline"
+                      >
+                        {plotLink}
+                      </a>
                     </dd>
                   </div>
                 )}

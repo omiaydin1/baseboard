@@ -1,10 +1,13 @@
 "use client";
 
+import { useActiveChainConfig } from "@/hooks/useActiveContract";
+
 /**
  * The "BaseBoard" title plaque, styled to look like a framed sign hanging from
  * a nail in the wall by two taut ropes. Pure SVG + CSS, no images.
  */
 export function HangingHeader() {
+  const cfg = useActiveChainConfig();
   return (
     <div className="pointer-events-none relative z-20 flex flex-col items-center">
       {/* Nail driven into the wall */}
@@ -52,7 +55,7 @@ export function HangingHeader() {
           BaseBoard
         </h1>
         <p className="mt-0.5 text-center text-[11px] font-semibold uppercase tracking-[0.25em] text-base-light">
-          10,000,000 plots · Base Mainnet
+          10,000,000 plots · {cfg.name}
         </p>
       </div>
     </div>

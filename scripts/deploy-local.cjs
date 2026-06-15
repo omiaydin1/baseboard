@@ -7,7 +7,10 @@ async function main() {
   console.log("Deployer:", deployer.address);
 
   const BaseBoard = await hre.ethers.getContractFactory("BaseBoard");
-  const board = await BaseBoard.deploy();
+  const board = await BaseBoard.deploy(
+    hre.ethers.parseEther("0.00005"),
+    deployer.address,
+  );
   await board.waitForDeployment();
 
   const address = await board.getAddress();

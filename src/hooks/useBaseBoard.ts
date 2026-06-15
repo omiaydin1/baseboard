@@ -3,34 +3,46 @@
 import { useCallback, useEffect } from "react";
 import {
   useAccount,
+  useChainId,
   useReadContract,
-  useSwitchChain,
   useWatchContractEvent,
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
-import { base } from "viem/chains";
-import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
+import { base, celo, hardhat } from "viem/chains";
+import type { Chain } from "viem";
+import { baseBoardAbi } from "@/lib/contract";
 import {
-  ACTIVE_CHAIN_ID,
+  DEFAULT_CHAIN_CONFIG,
   DISPLAY_MAX_PLOTS,
-  IS_CONTRACT_CONFIGURED,
+  getChainConfig,
   ZERO_ADDRESS,
 } from "@/lib/constants";
+import { useActiveChainConfig } from "./useActiveContract";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 
-const sharedReadConfig = {
-  address: baseBoardAddress,
-  abi: baseBoardAbi,
-} as const;
+/** viem chain object for a given chain id (for pinning write transactions). */
+function viemChainFor(chainId: number): Chain {
+  switch (chainId) {
+    case celo.id:
+      return celo;
+    case hardhat.id:
+      return hardhat;
+    default:
+      return base;
+  }
+}
 
 export function useBoardStats() {
+  const cfg = useActiveChainConfig();
+  const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
+
   const { data, refetch, isLoading } = useReadContract({
     ...sharedReadConfig,
     functionName: "totalPlotsSold",
     query: {
-      enabled: IS_CONTRACT_CONFIGURED,
+      enabled: cfg.isConfigured,
       refetchInterval: 15_000,
     },
   });
@@ -38,13 +50,13 @@ export function useBoardStats() {
   useWatchContractEvent({
     ...sharedReadConfig,
     eventName: "PlotsPurchased",
-    enabled: IS_CONTRACT_CONFIGURED,
+    enabled: cfg.isConfigured,
     onLogs: () => {
       void refetch();
     },
   });
 
-  const sold = IS_CONTRACT_CONFIGURED && data != null ? Number(data) : 0;
+  const sold = cfg.isConfigured && data != null ? Number(data) : 0;
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
   return { sold, remaining, isLoading, refetch };
@@ -52,7 +64,9 @@ export function useBoardStats() {
 
 export function usePlot(plotId: number | null) {
   const { refreshNonce } = useBoardStore();
-  const enabled = IS_CONTRACT_CONFIGURED && plotId != null;
+  const cfg = useActiveChainConfig();
+  const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
+  const enabled = cfg.isConfigured && plotId != null;
 
   const query = useReadContract({
     ...sharedReadConfig,
@@ -73,7 +87,9 @@ export function usePlot(plotId: number | null) {
 }
 
 export function useOffer(plotId: number | null, bidder?: `0x${string}`) {
-  const enabled = IS_CONTRACT_CONFIGURED && plotId != null && !!bidder;
+  const cfg = useActiveChainConfig();
+  const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
+  const enabled = cfg.isConfigured && plotId != null && !!bidder;
   return useReadContract({
     ...sharedReadConfig,
     functionName: "offers",
@@ -84,7 +100,9 @@ export function useOffer(plotId: number | null, bidder?: `0x${string}`) {
 
 export function usePlotsByOwner(account?: `0x${string}`) {
   const { refreshNonce } = useBoardStore();
-  const enabled = IS_CONTRACT_CONFIGURED && !!account;
+  const cfg = useActiveChainConfig();
+  const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
+  const enabled = cfg.isConfigured && !!account;
 
   const query = useReadContract({
     ...sharedReadConfig,
@@ -108,6 +126,7 @@ export function usePlotsByOwner(account?: `0x${string}`) {
 export function useBaseBoardWrite() {
   const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
   const { connector } = useAccount();
+  const chainId = useChainId();
   const {
     writeContract,
     writeContractAsync,
@@ -116,7 +135,6 @@ export function useBaseBoardWrite() {
     error,
     reset,
   } = useWriteContract();
-  const { switchChainAsync } = useSwitchChain();
 
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
     hash,
@@ -129,21 +147,32 @@ export function useBaseBoardWrite() {
   type WriteAsync = typeof writeContractAsync;
   const writeContractAsyncGuarded = useCallback<WriteAsync>(
     ((variables, options) => {
+      // Pin every write to the *active* chain (Base or Celo) so transactions
+      // always land on the network whose contract the UI is reading from.
+      const cfg = getChainConfig(chainId) ?? DEFAULT_CHAIN_CONFIG;
+      const targetChainId = cfg.chainId;
+      const targetChain = viemChainFor(targetChainId);
+
       const doWrite = () =>
         writeContractAsync(
-          { ...variables, chainId: ACTIVE_CHAIN_ID, chain: base },
+          { ...variables, chainId: targetChainId, chain: targetChain },
           options,
         );
 
-      const ensureBaseAndWrite = async () => {
+      const ensureChainAndWrite = async () => {
         if (connector) {
-          const provider = await connector.getProvider() as {
-            request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+          const provider = (await connector.getProvider()) as {
+            request: (args: {
+              method: string;
+              params?: unknown[];
+            }) => Promise<unknown>;
           };
-          const rawId = await provider.request({ method: "eth_chainId" }) as string;
+          const rawId = (await provider.request({
+            method: "eth_chainId",
+          })) as string;
           const realChainId = parseInt(rawId, 16);
-          if (realChainId !== ACTIVE_CHAIN_ID) {
-            const hexChainId = `0x${ACTIVE_CHAIN_ID.toString(16)}`;
+          if (realChainId !== targetChainId) {
+            const hexChainId = `0x${targetChainId.toString(16)}`;
             try {
               await provider.request({
                 method: "wallet_switchEthereumChain",
@@ -154,16 +183,24 @@ export function useBaseBoardWrite() {
               if (code === 4902 || code === -32603) {
                 await provider.request({
                   method: "wallet_addEthereumChain",
-                  params: [{
-                    chainId: hexChainId,
-                    chainName: "Base",
-                    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-                    rpcUrls: ["https://mainnet.base.org"],
-                    blockExplorerUrls: ["https://basescan.org"],
-                  }],
+                  params: [
+                    {
+                      chainId: hexChainId,
+                      chainName: cfg.name,
+                      nativeCurrency: {
+                        name: cfg.nativeSymbol,
+                        symbol: cfg.nativeSymbol,
+                        decimals: 18,
+                      },
+                      rpcUrls: [cfg.rpcUrl],
+                      blockExplorerUrls: cfg.explorer ? [cfg.explorer] : [],
+                    },
+                  ],
                 });
               } else {
-                throw new Error("Please switch to Base Mainnet in your wallet to continue.");
+                throw new Error(
+                  `Please switch to ${cfg.name} in your wallet to continue.`,
+                );
               }
             }
           }
@@ -171,9 +208,9 @@ export function useBaseBoardWrite() {
         return doWrite();
       };
 
-      return ensureBaseAndWrite();
+      return ensureChainAndWrite();
     }) as WriteAsync,
-    [writeContractAsync, switchChainAsync, connector],
+    [writeContractAsync, connector, chainId],
   );
 
   const status = isPending

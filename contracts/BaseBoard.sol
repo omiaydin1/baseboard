@@ -24,12 +24,24 @@ contract BaseBoard {
     /// @notice Maximum number of addressable plots (3162 * 3162 = 9,998,244).
     uint256 public constant MAX_PLOTS = GRID_SIZE * GRID_SIZE;
 
-    /// @notice Flat primary mint price per plot.
-    uint256 public constant PLOT_PRICE = 0.00005 ether;
+    /// @notice Flat primary mint price per plot (set at deploy time, native
+    ///         units). Base: 0.00005 ETH. Celo: 1.3 CELO.
+    uint256 public immutable PLOT_PRICE;
 
-    /// @notice Treasury that receives 100% of primary purchase proceeds.
-    address payable public constant TREASURY =
-        payable(0xce835359202acbB4a10d9a2f97a72E6d0B76f1e2);
+    /// @notice Treasury that receives 100% of primary purchase proceeds
+    ///         (set at deploy time).
+    address payable public immutable TREASURY;
+
+    /**
+     * @param plotPrice Flat primary mint price per plot, in native wei.
+     * @param treasury  Address that receives 100% of primary sale proceeds.
+     */
+    constructor(uint256 plotPrice, address payable treasury) {
+        require(plotPrice > 0, "Price must be > 0");
+        require(treasury != address(0), "Treasury required");
+        PLOT_PRICE = plotPrice;
+        TREASURY = treasury;
+    }
 
     // ---------------------------------------------------------------------
     // Types & storage

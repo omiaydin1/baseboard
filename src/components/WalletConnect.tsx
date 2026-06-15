@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ConnectWallet,
   Wallet,
@@ -18,25 +19,49 @@ import {
   useChainId,
   useConnect,
   useDisconnect,
-  useSwitchChain,
+  type Connector,
 } from "wagmi";
-import { ACTIVE_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
+import { CELO_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
 import { shortAddress } from "@/lib/coords";
+import { Modal } from "./Modal";
+
+/** Whether a connector is Coinbase Wallet / Smart Wallet. */
+function isCoinbaseConnector(id: string, name: string): boolean {
+  return /coinbase/i.test(id) || /coinbase/i.test(name);
+}
+
+/** Friendly, stable label for a connector. */
+function connectorLabel(c: Connector): string {
+  if (isCoinbaseConnector(c.id, c.name)) return "Coinbase Smart Wallet";
+  if (c.id === "injected") return "MetaMask / Rabby / Browser Wallet";
+  if (/walletconnect/i.test(c.id)) return "WalletConnect";
+  return c.name;
+}
 
 /**
- * Connect / account button powered by OnchainKit. Supports Coinbase Wallet,
- * MetaMask / injected wallets, and (when configured) WalletConnect. When the
- * wallet is connected to the wrong chain, a prominent "Switch to Base" button
- * is shown instead so the app only ever transacts on Base Mainnet (8453).
+ * Connect / account button. Disconnected, it always shows a single clean
+ * "Connect Wallet" button that opens a wallet-selection modal. Coinbase Smart
+ * Wallet is offered everywhere *except* Celo (which it cannot transact on),
+ * where users are steered to MetaMask / Rabby / WalletConnect.
  */
 export function WalletConnect() {
   // Dev-only: connect straight to the injected local provider so the full flow
   // can be tested against a Hardhat node without a real wallet popup.
   if (DEV_LOCAL) return <DevWalletConnect />;
 
-  return (
-    <div className="flex items-center gap-2">
-      <NetworkSwitchButton />
+  return <ChainAwareWalletConnect />;
+}
+
+function ChainAwareWalletConnect() {
+  const chainId = useChainId();
+  const { isConnected } = useAccount();
+  const isCelo = chainId === CELO_CHAIN_ID;
+
+  // Connected: keep the legacy OnchainKit account dropdown on Base; on Celo use
+  // a plain address + disconnect control (OnchainKit identity is Base-only).
+  if (isConnected) {
+    if (isCelo) return <CeloConnected />;
+    return (
       <Wallet>
         <ConnectWallet className="!bg-base-blue !text-white !rounded-xl !px-4 !py-2 !font-semibold hover:!bg-base-dark">
           <Avatar className="h-5 w-5" />
@@ -52,30 +77,78 @@ export function WalletConnect() {
           <WalletDropdownDisconnect />
         </WalletDropdown>
       </Wallet>
-    </div>
+    );
+  }
+
+  return <ConnectWalletButton hideCoinbase={isCelo} />;
+}
+
+/** Single "Connect Wallet" button + a modal listing the available wallets. */
+function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
+  const [open, setOpen] = useState(false);
+  const { connect, connectors, isPending } = useConnect();
+
+  // De-dupe by id and, on Celo, drop Coinbase (unsupported).
+  const seen = new Set<string>();
+  const list = connectors.filter((c) => {
+    if (hideCoinbase && isCoinbaseConnector(c.id, c.name)) return false;
+    if (seen.has(c.id)) return false;
+    seen.add(c.id);
+    return true;
+  });
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="rounded-xl bg-base-blue px-4 py-2 font-semibold text-white hover:bg-base-dark"
+      >
+        Connect Wallet
+      </button>
+
+      <Modal open={open} onClose={() => setOpen(false)} title="Connect a wallet">
+        <div className="flex flex-col gap-2">
+          {list.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              disabled={isPending}
+              onClick={() => {
+                connect({ connector: c });
+                setOpen(false);
+              }}
+              className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left font-semibold text-slate-800 transition hover:border-base-blue hover:bg-base-blue/5 disabled:opacity-60"
+            >
+              <span>{connectorLabel(c)}</span>
+              <span aria-hidden className="text-base-blue">
+                →
+              </span>
+            </button>
+          ))}
+          {hideCoinbase && (
+            <p className="mt-1 text-[11px] leading-tight text-slate-500">
+              Coinbase Smart Wallet isn&apos;t supported on Celo — connect with
+              MetaMask, Rabby or WalletConnect.
+            </p>
+          )}
+        </div>
+      </Modal>
+    </>
   );
 }
 
-/**
- * Prominent "Wrong Network" pill + one-tap switch to Base Mainnet. Renders
- * nothing when disconnected or already on the correct chain.
- */
-function NetworkSwitchButton() {
-  const { isConnected } = useAccount();
-  const chainId = useChainId();
-  const { switchChain, isPending } = useSwitchChain();
-
-  if (!isConnected || chainId === ACTIVE_CHAIN_ID) return null;
-
+/** Connected state on Celo: address + disconnect. */
+function CeloConnected() {
+  const { address } = useAccount();
+  const { disconnect } = useDisconnect();
   return (
     <button
       type="button"
-      onClick={() => switchChain({ chainId: ACTIVE_CHAIN_ID })}
-      disabled={isPending}
-      className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-sm font-bold text-white shadow hover:bg-amber-600 disabled:opacity-60"
+      onClick={() => disconnect()}
+      className="rounded-xl bg-base-blue px-4 py-2 font-semibold text-white hover:bg-base-dark"
     >
-      <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
-      {isPending ? "Switching…" : "Switch to Base"}
+      {shortAddress(address)} · Disconnect
     </button>
   );
 }
