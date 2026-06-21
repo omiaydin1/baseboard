@@ -11,15 +11,15 @@ export function HangingHeader() {
   return (
     <div className="pointer-events-none relative z-20 flex flex-col items-center">
       {/* Nail driven into the wall */}
-      <div className="relative h-3 w-3">
+      <div className="relative h-2 w-3">
         <div className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-slate-400 shadow-[0_1px_2px_rgba(0,0,0,0.4)]" />
         <div className="absolute left-1/2 top-0 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-slate-600" />
       </div>
 
       {/* Two ropes from the nail down to the corners of the plaque */}
       <svg
-        width="220"
-        height="58"
+        width="200"
+        height="38"
         viewBox="0 0 220 58"
         className="-mb-2"
         aria-hidden="true"
@@ -47,14 +47,14 @@ export function HangingHeader() {
       </svg>
 
       {/* The plaque itself */}
-      <div className="relative rounded-2xl border-4 border-base-blue bg-white px-8 py-3 shadow-frame">
+      <div className="relative rounded-2xl border-4 border-base-blue bg-white px-8 py-1.5 shadow-frame">
         {/* mounting eyelets the ropes attach to */}
         <span className="absolute -top-2 left-4 h-3 w-3 rounded-full border-2 border-base-blue bg-white" />
         <span className="absolute -top-2 right-4 h-3 w-3 rounded-full border-2 border-base-blue bg-white" />
-        <h1 className="select-none text-center text-3xl font-black tracking-tight text-base-blue sm:text-4xl">
+        <h1 className="select-none text-center text-2xl font-black tracking-tight text-base-blue sm:text-3xl">
           BaseBoard
         </h1>
-        <p className="mt-0.5 text-center text-[11px] font-semibold uppercase tracking-[0.25em] text-base-light">
+        <p className="mt-0 text-center text-[10px] font-semibold uppercase tracking-[0.25em] text-base-light">
           10,000,000 plots · {cfg.name}
         </p>
       </div>
