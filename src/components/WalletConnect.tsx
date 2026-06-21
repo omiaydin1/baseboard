@@ -2,20 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  ConnectWallet,
-  Wallet,
-  WalletDropdown,
-  WalletDropdownDisconnect,
-} from "@coinbase/onchainkit/wallet";
-import {
-  Address,
-  Avatar,
-  EthBalance,
-  Identity,
-  Name,
-} from "@coinbase/onchainkit/identity";
-import { base } from "wagmi/chains";
-import {
   useAccount,
   useChainId,
   useConnect,
@@ -26,6 +12,7 @@ import {
 import { BASE_CHAIN_ID, CELO_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
 import { BASE_WALLET_ID, COINBASE_WALLET_ID } from "@/lib/wagmi";
 import { shortAddress } from "@/lib/coords";
+import { useBaseName } from "@/hooks/useBaseName";
 import { useCeloName } from "@/hooks/useCeloName";
 import { BaseLogo } from "./ChainLogos";
 import { Spinner } from "./Spinner";
@@ -126,23 +113,7 @@ function ChainAwareWalletConnect() {
   if (isConnected) {
     if (isCelo) return <CeloConnected />;
     if (chainId !== BASE_CHAIN_ID) return <SwitchToBaseButton />;
-    return (
-      <Wallet>
-        <ConnectWallet className="!bg-base-blue !text-white !rounded-xl !px-4 !py-2 !font-semibold hover:!bg-base-dark">
-          <Avatar chain={base} className="h-5 w-5" />
-          <Name chain={base} />
-        </ConnectWallet>
-        <WalletDropdown>
-          <Identity className="px-4 pt-3 pb-2" chain={base} hasCopyAddressOnClick>
-            <Avatar chain={base} />
-            <Name chain={base} />
-            <Address />
-            <EthBalance />
-          </Identity>
-          <WalletDropdownDisconnect />
-        </WalletDropdown>
-      </Wallet>
-    );
+    return <BaseConnected />;
   }
 
   return <ConnectWalletButton hideCoinbase={isCelo} />;
@@ -168,15 +139,24 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
   const walletConnectC = connectors.find((c) => /walletconnect/i.test(c.id));
   const genericInjected = connectors.find((c) => c.id === "injected");
 
+  // Fixed top-to-bottom hierarchy:
+  //   1. Base Wallet  2. Coinbase Wallet  3. MetaMask
+  //   4. other branded EIP-6963 wallets (Rabby/OKX/Rainbow/…)  5. WalletConnect
+  const metamask = detected.find(
+    (c) => /metamask/i.test(c.name) || /metamask/i.test(c.id),
+  );
+  const otherDetected = detected.filter((c) => c.id !== metamask?.id);
+
   const list: Connector[] = [];
   const add = (c?: Connector) => {
     if (c && !list.some((x) => x.id === c.id)) list.push(c);
   };
-  detected.forEach(add);
   if (!hideCoinbase) {
-    add(coinbase);
     add(baseWallet);
+    add(coinbase);
   }
+  add(metamask);
+  otherDetected.forEach(add);
   add(walletConnectC);
   if (detected.length === 0) add(genericInjected);
 
@@ -255,6 +235,20 @@ function SwitchToBaseButton() {
       )}
       SWITCH TO BASE
     </button>
+  );
+}
+
+/** Connected state on Base: Basename-resolving account button + dropdown. */
+function BaseConnected() {
+  const { address } = useAccount();
+  const { disconnect } = useDisconnect();
+  const baseName = useBaseName(address);
+  return (
+    <ConnectedAccount
+      address={address}
+      name={baseName}
+      onDisconnect={() => disconnect()}
+    />
   );
 }
 

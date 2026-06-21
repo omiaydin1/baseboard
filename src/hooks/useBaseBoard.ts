@@ -75,13 +75,24 @@ export function usePlot(plotId: number | null) {
     args: plotId != null ? [BigInt(plotId)] : undefined,
     // Always read fresh when a plot is inspected so a just-bought/updated plot
     // never shows the stale "unowned" state from a cached zero-owner read.
-    query: { enabled, staleTime: 0, gcTime: 0 },
+    // `refetchOnMount: "always"` + retry guard against load-balanced public RPC
+    // nodes that occasionally lag a block and return a zero owner.
+    query: {
+      enabled,
+      staleTime: 0,
+      gcTime: 0,
+      refetchOnMount: "always",
+      retry: 3,
+      retryDelay: 400,
+    },
   });
 
+  // Force a fresh on-chain read on every refresh AND on every plot open (the
+  // plotId changing), so the first click after a tx reliably reflects state.
   useEffect(() => {
     if (enabled) void query.refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshNonce]);
+  }, [refreshNonce, plotId]);
 
   // Prefer an optimistic override (set the instant a tx confirms) so ownership
   // and image/link flip immediately on every click instead of after several

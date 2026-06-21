@@ -32,8 +32,12 @@ export const MAX_ONCHAIN_IMAGE_BYTES = 12 * 1024;
  */
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
-/** Target budget we try to hit while compressing (leaves room for a zone tag). */
-const TARGET_BYTES = 10 * 1024;
+/**
+ * Target budget we try to hit while compressing. Use almost the entire on-chain
+ * cap (leaving a small margin for the `#bb=…&link=…` metadata fragment) so we
+ * spend every available byte on image quality instead of leaving headroom idle.
+ */
+const TARGET_BYTES = MAX_ONCHAIN_IMAGE_BYTES - 768;
 
 /**
  * Resolution budget per plot cell. An image only ever needs enough pixels to
@@ -41,9 +45,9 @@ const TARGET_BYTES = 10 * 1024;
  * encoding it at a huge resolution just bloats the on-chain data URI (and gas)
  * for no visible gain. We therefore size the encode to the selected bounding box.
  */
-const PX_PER_PLOT = 80;
+const PX_PER_PLOT = 128;
 /** Never encode a longest side larger than this, however big the selection. */
-const MAX_ZONE_DIM = 384;
+const MAX_ZONE_DIM = 640;
 /** Smallest longest-side we'll ever drop to while squeezing under the budget. */
 const MIN_DIM = 48;
 
@@ -188,8 +192,10 @@ export async function compressImageFile(
   // Step dimensions / quality down until the data URI fits the on-chain budget
   // (~10 KB target). The ladder starts at the resolution the *selected plots*
   // actually need (so a 1×1 plot encodes tiny) and only shrinks from there.
-  const dims = dimLadder(maxDim ?? 320);
-  const qualities = [0.84, 0.74, 0.64, 0.54, 0.44, 0.34, 0.28];
+  const dims = dimLadder(maxDim ?? 512);
+  // Try high quality first at each size so we keep the crispest encode that
+  // still fits the (now near-maximal) byte budget.
+  const qualities = [0.94, 0.88, 0.82, 0.74, 0.64, 0.54, 0.44, 0.34, 0.28];
 
   let smallest: { dataUri: string; width: number; height: number } | null = null;
 
