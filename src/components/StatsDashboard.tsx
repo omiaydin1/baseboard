@@ -14,7 +14,7 @@ function StatCard({
 }) {
   return (
     <div
-      className={`flex min-w-[110px] flex-1 flex-col rounded-xl border-2 px-3 py-2 sm:min-w-[150px] sm:px-4 sm:py-2.5 ${
+      className={`flex min-w-[110px] flex-1 flex-col rounded-xl border-2 px-3 py-1.5 sm:min-w-[150px] sm:px-4 sm:py-2 ${
         accent
           ? "border-base-blue bg-blue-50"
           : "border-blue-100 bg-white"
@@ -37,14 +37,14 @@ export function StatsDashboard() {
 
   return (
     <div className="w-full">
-      <div className="flex flex-wrap items-stretch gap-3">
+      <div className="flex flex-wrap items-stretch gap-2">
         <StatCard label="Total Plots Sold" value={sold.toLocaleString()} accent />
         <StatCard
           label="Remaining Available"
           value={remaining.toLocaleString()}
         />
         <StatCard label="Sold %" value={`${pct}%`} />
-        <div className="flex items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2.5">
+        <div className="flex items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2">
           <span className="relative flex h-2.5 w-2.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
             <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
@@ -59,7 +59,7 @@ export function StatsDashboard() {
           to enable live on-chain stats and transactions.
         </p>
       )}
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-blue-100">
+      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
         <div
           className="h-full rounded-full bg-base-blue transition-all"
           style={{ width: `${Math.min(100, Number(pct))}%` }}
