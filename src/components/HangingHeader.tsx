@@ -46,8 +46,9 @@ export function HangingHeader() {
         <circle cx="110" cy="3" r="3.5" fill="none" stroke="#92400e" strokeWidth="2" />
       </svg>
 
-      {/* The plaque itself */}
-      <div className="relative rounded-2xl border-4 border-base-blue bg-white px-8 py-1.5 shadow-frame">
+      {/* The plaque itself — bottom is flat & borderless so it flows directly
+          into the main frame's top border, reading as one unified structure. */}
+      <div className="relative -mb-[5px] rounded-t-2xl border-4 border-b-0 border-base-blue bg-white px-8 pb-3 pt-1.5 shadow-frame">
         {/* mounting eyelets the ropes attach to */}
         <span className="absolute -top-2 left-4 h-3 w-3 rounded-full border-2 border-base-blue bg-white" />
         <span className="absolute -top-2 right-4 h-3 w-3 rounded-full border-2 border-base-blue bg-white" />

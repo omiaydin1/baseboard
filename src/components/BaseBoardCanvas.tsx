@@ -249,7 +249,15 @@ export function BaseBoardCanvas() {
     ctx.fillRect(boardLeft, boardTop, boardSize, boardSize);
 
     // ---- Owned plots + stretched images (grouped by owner+uri) ----
+    // Clip to the board's content rect so nothing — including the enforced
+    // minimum marker size at full zoom-out — can ever draw past the grid
+    // boundary and bleed outside the framed canvas.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(boardLeft, boardTop, boardSize, boardSize);
+    ctx.clip();
     drawPlots(ctx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
+    ctx.restore();
 
     // ---- Solid Base-blue outline marking the active grid boundary ----
     // Always visible so the playable map is clearly separated from the white
