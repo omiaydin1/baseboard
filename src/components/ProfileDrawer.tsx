@@ -9,14 +9,16 @@ import { useBoardStore } from "@/store/useBoardStore";
 import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi } from "@/lib/contract";
-import { ZERO_ADDRESS } from "@/lib/constants";
-import { shortAddress, xyFromPlotId } from "@/lib/coords";
+import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
+import { plotIdFromXY, shortAddress, xyFromPlotId } from "@/lib/coords";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
+  MAX_UPLOAD_BYTES,
   compressImageFile,
   dimForPlots,
   parseLink,
   stripZone,
+  validateImageContent,
   validateLinkUrl,
   withMeta,
   type Zone,
@@ -24,6 +26,41 @@ import {
 import type { Plot } from "@/lib/types";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
+
+/**
+ * Group owned plot ids into clusters of 4-neighbour adjacency. Each cluster is
+ * one contiguous "purchase block", letting the multi-select UX offer a single
+ * master checkbox to toggle every plot bought together at once.
+ */
+function clusterize(ids: number[]): number[][] {
+  const set = new Set(ids);
+  const seen = new Set<number>();
+  const clusters: number[][] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const stack = [id];
+    const cluster: number[] = [];
+    while (stack.length) {
+      const cur = stack.pop() as number;
+      cluster.push(cur);
+      const { x, y } = xyFromPlotId(cur);
+      const neighbours: number[] = [];
+      if (x + 1 < GRID_SIZE) neighbours.push(plotIdFromXY(x + 1, y));
+      if (x - 1 >= 0) neighbours.push(plotIdFromXY(x - 1, y));
+      if (y + 1 < GRID_SIZE) neighbours.push(plotIdFromXY(x, y + 1));
+      if (y - 1 >= 0) neighbours.push(plotIdFromXY(x, y - 1));
+      for (const n of neighbours) {
+        if (set.has(n) && !seen.has(n)) {
+          seen.add(n);
+          stack.push(n);
+        }
+      }
+    }
+    clusters.push(cluster.sort((a, b) => a - b));
+  }
+  return clusters;
+}
 
 /** Validate an image reference (data URI, ipfs://, or a direct image URL). */
 function validateImageRef(ref: string): string | null {
@@ -115,6 +152,15 @@ export function ProfileDrawer() {
 
   const toggleSelected = (id: number) =>
     setSelected((s) => (s.includes(id) ? s.filter((i) => i !== id) : [...s, id]));
+
+  const toggleCluster = (cluster: number[]) =>
+    setSelected((s) => {
+      const all = cluster.every((id) => s.includes(id));
+      if (all) return s.filter((id) => !cluster.includes(id));
+      const next = new Set(s);
+      cluster.forEach((id) => next.add(id));
+      return Array.from(next);
+    });
 
   useEffect(() => {
     if (!profileOpen) {
@@ -261,20 +307,64 @@ export function ProfileDrawer() {
               {multiMode && (
                 <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-base-blue">
                   Tap the plots you want to cover, then upload a single image —
-                  it spans the whole selection in one transaction.
+                  it spans the whole selection in one transaction. Use a batch
+                  master checkbox to select a whole purchase block at once.
                 </p>
               )}
 
-              {ids.map((id) => (
-                <OwnedPlotRow
-                  key={id}
-                  plotId={id}
-                  plot={details[id]}
-                  selectable={multiMode}
-                  checked={selected.includes(id)}
-                  onToggle={() => toggleSelected(id)}
-                />
-              ))}
+              {multiMode
+                ? clusterize(ids).map((cluster, ci) => {
+                    const allChecked = cluster.every((id) =>
+                      selected.includes(id),
+                    );
+                    const someChecked = cluster.some((id) =>
+                      selected.includes(id),
+                    );
+                    return (
+                      <div
+                        key={`batch-${cluster[0]}`}
+                        className="rounded-xl border-2 border-blue-100 p-2"
+                      >
+                        <label className="mb-1 flex cursor-pointer items-center gap-2 px-1 py-1 text-xs font-bold text-base-blue">
+                          <input
+                            type="checkbox"
+                            checked={allChecked}
+                            ref={(el) => {
+                              if (el)
+                                el.indeterminate = !allChecked && someChecked;
+                            }}
+                            onChange={() => toggleCluster(cluster)}
+                            className="h-4 w-4 accent-base-blue"
+                          />
+                          Batch #{ci + 1} · {cluster.length} plot
+                          {cluster.length === 1 ? "" : "s"}
+                          {cluster.length > 1 ? " (adjacent)" : ""}
+                        </label>
+                        <div className="space-y-2">
+                          {cluster.map((id) => (
+                            <OwnedPlotRow
+                              key={id}
+                              plotId={id}
+                              plot={details[id]}
+                              selectable
+                              checked={selected.includes(id)}
+                              onToggle={() => toggleSelected(id)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })
+                : ids.map((id) => (
+                    <OwnedPlotRow
+                      key={id}
+                      plotId={id}
+                      plot={details[id]}
+                      selectable={false}
+                      checked={selected.includes(id)}
+                      onToggle={() => toggleSelected(id)}
+                    />
+                  ))}
             </div>
           )}
         </div>
@@ -689,7 +779,7 @@ function MultiImagePanel({
   };
 
   return (
-    <div className="border-t-2 border-blue-100 bg-white p-4 shadow-[0_-8px_20px_rgba(0,82,255,0.06)]">
+    <div className="thin-scrollbar max-h-[55vh] shrink-0 touch-pan-y overflow-y-auto overscroll-contain border-t-2 border-blue-100 bg-white p-4 shadow-[0_-8px_20px_rgba(0,82,255,0.06)]">
       <p className="mb-2 text-sm font-bold text-base-blue">
         {selected.length} plot{selected.length === 1 ? "" : "s"} selected ·{" "}
         {plotsW}×{plotsH} area
@@ -735,6 +825,21 @@ function ImageUploader({
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       setError("Please choose an image file");
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(
+        `That file is ${(file.size / (1024 * 1024)).toFixed(
+          1,
+        )} MB — the maximum upload size is 5 MB.`,
+      );
+      return;
+    }
+    const content = validateImageContent(file);
+    if (!content.ok) {
+      setError(
+        "Explicit or restricted image content detected. Please choose a different image.",
+      );
       return;
     }
     setCompressing(true);

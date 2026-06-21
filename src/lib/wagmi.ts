@@ -1,9 +1,37 @@
-import { http, createConfig, createStorage, cookieStorage } from "wagmi";
+import {
+  http,
+  createConfig,
+  createStorage,
+  cookieStorage,
+  type CreateConnectorFn,
+} from "wagmi";
 import { base, celo, hardhat } from "wagmi/chains";
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
 import { DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
 
 const LOCAL_RPC = "http://127.0.0.1:8545";
+
+/** Stable connector ids so the UI can label / guard each row explicitly. */
+export const COINBASE_WALLET_ID = "coinbaseWalletSDK";
+export const BASE_WALLET_ID = "baseWallet";
+
+/**
+ * A dedicated "Base Wallet" row backed by the Coinbase smart-wallet (Base
+ * Account) flow. We wrap the standard Coinbase connector and override its
+ * id/name so it appears as its own branded desktop onboarding option distinct
+ * from the classic "Coinbase Wallet" row. Both are Coinbase-family connectors
+ * and therefore hidden on Celo (which the smart wallet doesn't support).
+ */
+function baseWalletConnector(): CreateConnectorFn {
+  const inner = coinbaseWallet({
+    appName: "BaseBoard",
+    preference: "smartWalletOnly",
+  });
+  return (params) => {
+    const connector = inner(params);
+    return { ...connector, id: BASE_WALLET_ID, name: "Base Wallet" };
+  };
+}
 
 /**
  * Dev-only: install a minimal EIP-1193 provider on `window.ethereum` that proxies
@@ -85,6 +113,7 @@ export function getWagmiConfig() {
       appName: "BaseBoard",
       preference: "all",
     }),
+    baseWalletConnector(),
     injected({ shimDisconnect: true }),
     ...(WALLETCONNECT_PROJECT_ID
       ? [

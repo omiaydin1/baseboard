@@ -46,7 +46,7 @@ export default function Home() {
       <main className="flex flex-1 flex-col items-center overflow-hidden px-4 pt-3">
         <HangingHeader />
 
-        <div className="relative mt-1 w-full max-w-7xl flex-1 overflow-hidden rounded-[16px] border-[6px] border-base-blue bg-white shadow-frame sm:rounded-[28px] sm:border-[12px]">
+        <div className="relative mt-1 w-full max-w-7xl flex-1 overflow-hidden rounded-[16px] border-base-blue bg-white shadow-frame border-l-[8px] border-r-[8px] border-b-[8px] border-t-[3px] sm:rounded-[28px] sm:border-l-[16px] sm:border-r-[16px] sm:border-b-[16px] sm:border-t-[6px]">
           {/* inner shadow ring to enhance the "framed canvas" depth */}
           <div className="pointer-events-none absolute inset-0 z-10 rounded-[10px] shadow-[inset_0_0_20px_rgba(0,82,255,0.12)] sm:rounded-[16px] sm:shadow-[inset_0_0_30px_rgba(0,82,255,0.12)]" />
           <BaseBoardCanvas />

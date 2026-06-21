@@ -64,7 +64,7 @@ export function useBoardStats() {
 }
 
 export function usePlot(plotId: number | null) {
-  const { refreshNonce } = useBoardStore();
+  const { refreshNonce, optimisticPlots } = useBoardStore();
   const cfg = useActiveChainConfig();
   const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
   const enabled = cfg.isConfigured && plotId != null;
@@ -73,7 +73,9 @@ export function usePlot(plotId: number | null) {
     ...sharedReadConfig,
     functionName: "getPlot",
     args: plotId != null ? [BigInt(plotId)] : undefined,
-    query: { enabled },
+    // Always read fresh when a plot is inspected so a just-bought/updated plot
+    // never shows the stale "unowned" state from a cached zero-owner read.
+    query: { enabled, staleTime: 0, gcTime: 0 },
   });
 
   useEffect(() => {
@@ -81,7 +83,12 @@ export function usePlot(plotId: number | null) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshNonce]);
 
-  const plot = query.data as Plot | undefined;
+  // Prefer an optimistic override (set the instant a tx confirms) so ownership
+  // and image/link flip immediately on every click instead of after several
+  // open/close cycles while the RPC node catches up.
+  const onchain = query.data as Plot | undefined;
+  const override = plotId != null ? optimisticPlots[plotId] : undefined;
+  const plot = override ?? onchain;
   const isOwned = !!plot && plot.owner.toLowerCase() !== ZERO_ADDRESS;
 
   return { plot, isOwned, ...query };

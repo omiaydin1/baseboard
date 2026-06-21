@@ -137,7 +137,10 @@ export function BuyModal() {
     setTxError(null);
     clearBuySelection();
     setDirectBuyIds(null);
-    clearOptimisticPlots();
+    // Keep optimistic overrides after a successful buy so the plot reads as
+    // owned instantly on the next click; only clear them when nothing was
+    // purchased. Real on-chain reads overwrite them shortly after.
+    if (status !== "success") clearOptimisticPlots();
   };
 
   const busy = status === "pending" || status === "confirming";

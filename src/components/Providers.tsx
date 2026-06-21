@@ -7,6 +7,7 @@ import { WagmiProvider } from "wagmi";
 import { base } from "wagmi/chains";
 import { getWagmiConfig } from "@/lib/wagmi";
 import { ONCHAINKIT_API_KEY } from "@/lib/constants";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 /**
  * Wraps the app in the three providers OnchainKit requires, in order:
@@ -44,7 +45,7 @@ export function Providers({ children }: { children: ReactNode }) {
             },
           }}
         >
-          {children}
+          <ErrorBoundary>{children}</ErrorBoundary>
         </OnchainKitProvider>
       </QueryClientProvider>
     </WagmiProvider>

@@ -20,24 +20,45 @@ import {
   useChainId,
   useConnect,
   useDisconnect,
+  useSwitchChain,
   type Connector,
 } from "wagmi";
-import { CELO_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
+import { BASE_CHAIN_ID, CELO_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
+import { BASE_WALLET_ID, COINBASE_WALLET_ID } from "@/lib/wagmi";
 import { shortAddress } from "@/lib/coords";
 import { useCeloName } from "@/hooks/useCeloName";
+import { BaseLogo } from "./ChainLogos";
+import { Spinner } from "./Spinner";
 import { Modal } from "./Modal";
 
-/** Whether a connector is Coinbase Wallet / Smart Wallet. */
-function isCoinbaseConnector(id: string, name: string): boolean {
-  return /coinbase/i.test(id) || /coinbase/i.test(name);
+/** Whether a connector belongs to the Coinbase family (Coinbase / Base Wallet). */
+function isCoinbaseFamily(c: Connector): boolean {
+  return (
+    c.id === COINBASE_WALLET_ID ||
+    c.id === BASE_WALLET_ID ||
+    /coinbase/i.test(c.id) ||
+    /coinbase/i.test(c.name)
+  );
 }
 
 /** Friendly, stable label for a connector. */
 function connectorLabel(c: Connector): string {
-  if (isCoinbaseConnector(c.id, c.name)) return "Coinbase Smart Wallet";
-  if (c.id === "injected") return "MetaMask / Rabby / Browser Wallet";
+  if (c.id === BASE_WALLET_ID) return "Base Wallet";
+  if (isCoinbaseFamily(c)) return "Coinbase Wallet";
+  if (c.id === "injected") return "Browser Wallet";
   if (/walletconnect/i.test(c.id)) return "WalletConnect";
   return c.name;
+}
+
+/** Coinbase brand mark for the Coinbase Wallet row. */
+function CoinbaseMark({ size = 28 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="#0052FF" />
+      <circle cx="16" cy="16" r="9" fill="#FFFFFF" />
+      <rect x="12.5" y="12.5" width="7" height="7" rx="1.4" fill="#0052FF" />
+    </svg>
+  );
 }
 
 /**
@@ -46,6 +67,16 @@ function connectorLabel(c: Connector): string {
  * falls back to a neutral monogram tile so every row is visually aligned.
  */
 function ConnectorIcon({ connector }: { connector: Connector }) {
+  if (connector.id === BASE_WALLET_ID) {
+    return <BaseLogo size={28} className="shrink-0 rounded-lg" />;
+  }
+  if (isCoinbaseFamily(connector)) {
+    return (
+      <span className="shrink-0">
+        <CoinbaseMark size={28} />
+      </span>
+    );
+  }
   const icon = connector.icon;
   if (icon) {
     return (
@@ -89,9 +120,12 @@ function ChainAwareWalletConnect() {
 
   // Connected: keep the OnchainKit account dropdown on Base (resolves basenames,
   // click toggles a dropdown with Disconnect). On Celo use a matching custom
-  // account button + dropdown (OnchainKit identity is Base-only).
+  // account button + dropdown (OnchainKit identity is Base-only). On any other
+  // (unsupported) network, enforce a one-tap switch to Base. Celo is left
+  // entirely untouched.
   if (isConnected) {
     if (isCelo) return <CeloConnected />;
+    if (chainId !== BASE_CHAIN_ID) return <SwitchToBaseButton />;
     return (
       <Wallet>
         <ConnectWallet className="!bg-base-blue !text-white !rounded-xl !px-4 !py-2 !font-semibold hover:!bg-base-dark">
@@ -119,17 +153,32 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
   const [open, setOpen] = useState(false);
   const { connect, connectors, isPending } = useConnect();
 
-  // De-dupe by id and drop the generic/duplicate rows: the explicit per-wallet
-  // (EIP-6963) rows below already cover MetaMask / Rabby / OKX / Rainbow, and
-  // the generic "Coinbase Smart Wallet" row is redundant here.
-  const seen = new Set<string>();
-  const list = connectors.filter((c) => {
-    if (c.id === "injected") return false;
-    if (isCoinbaseConnector(c.id, c.name)) return false;
-    if (seen.has(c.id)) return false;
-    seen.add(c.id);
-    return true;
-  });
+  // Build the wallet list so something is ALWAYS visible — including inside
+  // mobile / BaseApp webviews where no EIP-6963 wallets are announced.
+  //  1. Explicit per-wallet rows detected via EIP-6963 (MetaMask/Rabby/OKX/…).
+  //  2. Coinbase Wallet + Base Wallet (native onboarding; hidden on Celo).
+  //  3. WalletConnect (mobile deep-link / QR).
+  //  4. A generic "Browser Wallet" fallback only when no EIP-6963 wallet was
+  //     detected, so in-app webviews with a bare window.ethereum still connect.
+  const detected = connectors.filter(
+    (c) => c.type === "injected" && c.id !== "injected" && !isCoinbaseFamily(c),
+  );
+  const coinbase = connectors.find((c) => c.id === COINBASE_WALLET_ID);
+  const baseWallet = connectors.find((c) => c.id === BASE_WALLET_ID);
+  const walletConnectC = connectors.find((c) => /walletconnect/i.test(c.id));
+  const genericInjected = connectors.find((c) => c.id === "injected");
+
+  const list: Connector[] = [];
+  const add = (c?: Connector) => {
+    if (c && !list.some((x) => x.id === c.id)) list.push(c);
+  };
+  detected.forEach(add);
+  if (!hideCoinbase) {
+    add(coinbase);
+    add(baseWallet);
+  }
+  add(walletConnectC);
+  if (detected.length === 0) add(genericInjected);
 
   return (
     <>
@@ -163,15 +212,49 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
               </span>
             </button>
           ))}
+          {list.length === 0 && (
+            <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              No wallet detected. Open this site inside your wallet app&apos;s
+              browser, or install MetaMask / Rabby / Coinbase Wallet to connect.
+            </p>
+          )}
           {hideCoinbase && (
             <p className="mt-1 text-[11px] leading-tight text-slate-500">
-              Coinbase Smart Wallet isn&apos;t supported on Celo — connect with
-              MetaMask, Rabby or WalletConnect.
+              Coinbase &amp; Base Wallet aren&apos;t supported on Celo — connect
+              with MetaMask, Rabby or WalletConnect.
             </p>
           )}
         </div>
       </Modal>
     </>
+  );
+}
+
+/**
+ * Wrong-network enforcement: when a connected wallet is on a network other than
+ * Base (and not Celo, which has its own flow), the button reads "SWITCH TO
+ * BASE" and a tap fires `wallet_switchEthereumChain` for Base Mainnet (8453).
+ */
+function SwitchToBaseButton() {
+  const { switchChain, isPending } = useSwitchChain();
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        switchChain({
+          chainId: BASE_CHAIN_ID as Parameters<
+            typeof switchChain
+          >[0]["chainId"],
+        })
+      }
+      disabled={isPending}
+      className="inline-flex items-center gap-2 rounded-xl bg-base-blue px-4 py-2 font-semibold text-white hover:bg-base-dark disabled:opacity-60"
+    >
+      {isPending && (
+        <Spinner size={16} className="!border-white/40 !border-t-white" />
+      )}
+      SWITCH TO BASE
+    </button>
   );
 }
 
