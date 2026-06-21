@@ -393,31 +393,44 @@ export function BaseBoardCanvas() {
       map.forEach((plot, id) => {
         if (plot.owner.toLowerCase() === ZERO_ADDRESS) return;
         const { x, y } = xyFromPlotId(id);
-        if (x < startX - 1 || x > endX + 1 || y < startY - 1 || y > endY + 1)
-          return;
+        const visible = !(
+          x < startX - 1 ||
+          x > endX + 1 ||
+          y < startY - 1 ||
+          y > endY + 1
+        );
 
-        // Base fill per cell. Enforce a minimum on-screen marker size so owned
-        // / for-sale plots stay visible at any zoom level — including fully
-        // zoomed out, where a single cell would otherwise be sub-pixel.
-        const isMine = me && plot.owner.toLowerCase() === me;
-        const sx = cellToScreenX(x);
-        const sy = cellToScreenY(y);
-        const zoomedOut = cam.scale < IMAGE_MIN_SCALE;
-        // Enforce a minimum on-screen marker so a single plot never collapses to
-        // a sub-pixel dot when fully zoomed out, and use a stronger palette at
-        // low zoom so claimed/for-sale plots read clearly against the board.
-        const marker = Math.max(cam.scale, zoomedOut ? 3.5 : 3);
-        ctx.fillStyle = plot.isForSale
-          ? zoomedOut
-            ? "#0052ff"
-            : "#60a5fa"
-          : isMine
-            ? "#1d4ed8"
-            : zoomedOut
-              ? "#93c5fd"
-              : "#bfdbfe";
-        ctx.fillRect(sx, sy, marker, marker);
+        // Base fill per cell — only for on-screen cells. Enforce a minimum
+        // on-screen marker size so owned / for-sale plots stay visible at any
+        // zoom level — including fully zoomed out, where a single cell would
+        // otherwise be sub-pixel.
+        if (visible) {
+          const isMine = me && plot.owner.toLowerCase() === me;
+          const sx = cellToScreenX(x);
+          const sy = cellToScreenY(y);
+          const zoomedOut = cam.scale < IMAGE_MIN_SCALE;
+          // Enforce a minimum on-screen marker so a single plot never collapses
+          // to a sub-pixel dot when fully zoomed out, and use a stronger palette
+          // at low zoom so claimed/for-sale plots read clearly.
+          const marker = Math.max(cam.scale, zoomedOut ? 3.5 : 3);
+          ctx.fillStyle = plot.isForSale
+            ? zoomedOut
+              ? "#0052ff"
+              : "#60a5fa"
+            : isMine
+              ? "#1d4ed8"
+              : zoomedOut
+                ? "#93c5fd"
+                : "#bfdbfe";
+          ctx.fillRect(sx, sy, marker, marker);
+        }
 
+        // Build image groups for EVERY loaded image plot regardless of whether
+        // its own anchor cell is currently on-screen. A multi-plot billboard's
+        // anchor (which carries the zone fragment) is often just off the visible
+        // edge while most of the artwork is still in view — culling here is what
+        // made perimeter images vanish during pan/zoom. We cull whole groups at
+        // draw time by their span bbox instead.
         if (plot.imageUri) {
           // Key on owner + image *content* (zone fragment stripped) so the SAME
           // artwork applied across separately-purchased adjacent batches stitches
@@ -469,6 +482,17 @@ export function BaseBoardCanvas() {
           const by1 = g.zone ? g.zone.y1 : g.y1;
           const bx2 = g.zone ? g.zone.x2 : g.x2;
           const by2 = g.zone ? g.zone.y2 : g.y2;
+
+          // Cull whole groups by their span bbox, not by anchor cell — so a
+          // billboard whose anchor is just off-screen still renders as long as
+          // any part of its area intersects the viewport.
+          if (
+            bx2 < startX - 1 ||
+            bx1 > endX + 1 ||
+            by2 < startY - 1 ||
+            by1 > endY + 1
+          )
+            return;
 
           const dx = cellToScreenX(bx1);
           const dy = cellToScreenY(by1);

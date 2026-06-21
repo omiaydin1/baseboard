@@ -45,11 +45,18 @@ function clusterize(ids: number[]): number[][] {
       const cur = stack.pop() as number;
       cluster.push(cur);
       const { x, y } = xyFromPlotId(cur);
+      // 8-directional adjacency: plots touching on any side OR corner belong to
+      // the same cohesive cluster, so an L-shape / diagonal block is grouped.
       const neighbours: number[] = [];
-      if (x + 1 < GRID_SIZE) neighbours.push(plotIdFromXY(x + 1, y));
-      if (x - 1 >= 0) neighbours.push(plotIdFromXY(x - 1, y));
-      if (y + 1 < GRID_SIZE) neighbours.push(plotIdFromXY(x, y + 1));
-      if (y - 1 >= 0) neighbours.push(plotIdFromXY(x, y - 1));
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue;
+          neighbours.push(plotIdFromXY(nx, ny));
+        }
+      }
       for (const n of neighbours) {
         if (set.has(n) && !seen.has(n)) {
           seen.add(n);
