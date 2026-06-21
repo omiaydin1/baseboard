@@ -23,6 +23,15 @@
  */
 export const MAX_ONCHAIN_IMAGE_BYTES = 12 * 1024;
 
+/**
+ * Largest *source* file a user may pick before we compress it for the chain.
+ * The on-chain payload is always downscaled to `MAX_ONCHAIN_IMAGE_BYTES`; this
+ * only caps the original device upload so a multi-megabyte file is rejected
+ * cleanly (and an API route, if added later, can mirror this with a `5mb`
+ * `bodyParser.sizeLimit`). Raised to 5 MB per product requirements.
+ */
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
 /** Target budget we try to hit while compressing (leaves room for a zone tag). */
 const TARGET_BYTES = 10 * 1024;
 
@@ -299,20 +308,55 @@ export function withMeta(
 const BLOCKED_KEYWORDS = [
   // pornography / adult
   "porn", "xxx", "xvideos", "xhamster", "pornhub", "redtube", "youporn",
-  "onlyfans", "brazzers", "nsfw", "hentai", "camgirl", "escort", "sexcam",
-  "adultfriendfinder",
+  "onlyfans", "fansly", "brazzers", "nsfw", "hentai", "camgirl", "camsite",
+  "escort", "sexcam", "sexchat", "sexshop", "adultfriendfinder", "chaturbate",
+  "stripchat", "myfreecams", "fapello", "rule34",
   // drugs / narcotics
   "cocaine", "heroin", "meth", "cannabis", "marijuana", "weed-shop",
-  "buyweed", "lsd", "mdma", "narcotic", "drugstore-illegal", "darknet",
+  "buyweed", "lsd", "mdma", "ketamine", "fentanyl", "psilocybin", "narcotic",
+  "drugstore-illegal", "darknet", "silkroad",
   // alcohol / liquor
   "liquorstore", "buyalcohol", "vodka-shop", "whiskey-shop", "beershop",
-  "winestore",
+  "winestore", "moonshine",
   // gambling / betting
-  "casino", "betting", "gambl", "poker", "roulette", "slots", "sportsbet",
-  "bet365", "1xbet", "stake.com", "pokerstars",
+  "casino", "betting", "gambl", "poker", "roulette", "blackjack", "baccarat",
+  "slots", "sportsbet", "sportsbook", "bet365", "1xbet", "stake.com",
+  "pokerstars", "wager",
   // phishing / malware
   "phishing", "free-crypto", "airdrop-claim", "wallet-verify", "seed-phrase",
-  "metamask-support", "connect-wallet-verify", "claim-reward",
+  "metamask-support", "connect-wallet-verify", "claim-reward", "double-your",
+];
+
+/**
+ * Deep pattern scanners run in addition to the keyword list. These catch
+ * obfuscated / inflected forms (e.g. `sexual`, `gambling`, `betting365`) and
+ * tld-style adult domains that a flat substring list would miss. Each pattern
+ * is matched against `hostname + pathname + search` (lower-cased).
+ */
+const BLOCKED_PATTERNS: RegExp[] = [
+  // pornography / adult
+  /porn\w*/,
+  /\bx{3,}\b/,
+  /sex(?:y|ual|cam|chat|shop|tube|video|work)/,
+  /\bnudes?\b/,
+  /\bn[\W_]?s[\W_]?f[\W_]?w\b/,
+  /\b(?:milf|bdsm|fetish|camgirls?|escorts?)\b/,
+  /\.(?:xxx|porn|adult|sex|cam|tube)(?:[/:?#]|$)/,
+  // gambling / betting
+  /\b(?:gambl|bett?ing|wager|roulette|blackjack|baccarat|slots?|jackpot)\w*/,
+  /\b(?:casino|sportsbook|sportsbet)\w*/,
+  /\b\d?x?bet\b/,
+  // drugs / narcotics
+  /\b(?:cocaine|heroin|meth(?:amphetamine)?|mdma|lsd|ketamine|fentanyl|psilocybin|cannabis|marijuana|narcotics?)\b/,
+  /\bbuy[-_]?(?:weed|drugs|coke|meth)\b/,
+  // alcohol / liquor
+  /\b(?:vodka|whiske?y|tequila|liquor|moonshine|absinthe)\b/,
+  // phishing / wallet-drainer structures
+  /seed[\W_]?phrase|private[\W_]?key/,
+  /wallet[\W_]?(?:verify|validate|connect|restore|sync)/,
+  /(?:airdrop|reward|nft|crypto|eth|usdt)[\W_]?claim/,
+  /claim[\W_]?(?:airdrop|reward|free)/,
+  /free[\W_]?(?:crypto|eth|nft|mint)/,
 ];
 
 export interface UrlValidationResult {
@@ -342,10 +386,51 @@ export function validateLinkUrl(raw: string): UrlValidationResult {
     return { ok: false, reason: "protocol" };
   }
 
-  const haystack = `${parsed.hostname}${parsed.pathname}${parsed.search}`.toLowerCase();
+  const haystack =
+    `${parsed.hostname}${parsed.pathname}${parsed.search}`.toLowerCase();
   if (BLOCKED_KEYWORDS.some((kw) => haystack.includes(kw))) {
+    return { ok: false, reason: "blocked" };
+  }
+  if (BLOCKED_PATTERNS.some((re) => re.test(haystack))) {
     return { ok: false, reason: "blocked" };
   }
 
   return { ok: true, url: parsed.toString() };
+}
+
+// ---------------------------------------------------------------------------
+// Image content moderation (lightweight, client-side)
+//
+// A full pixel-level NSFW classifier needs a model download (e.g. nsfwjs +
+// TensorFlow) which is heavy and slow. As a fast first line of defence we scan
+// the uploaded file's name for explicit anatomical / adult terms and block the
+// mint workflow before the wallet is ever invoked. Word-boundary matching keeps
+// innocent names (e.g. "essex-beach.png", "peacock.jpg") from false-positiving.
+// ---------------------------------------------------------------------------
+
+const EXPLICIT_IMAGE_PATTERNS: RegExp[] = [
+  /\b(?:penis|phallus|vagina|vulva|pussy|clitoris|genital\w*)\b/i,
+  /\b(?:boobs?|tits?|titties|nipples?|areola)\b/i,
+  /\b(?:nudes?|naked|topless|upskirt)\b/i,
+  /\bporn\w*|\bxxx\b|\bnsfw\b|hentai|rule34/i,
+  /\b(?:sexy?|sexual|erotica?|fetish|bdsm)\b/i,
+  /\b(?:dildo|cum(?:shot)?|blow[\W_]?job|hand[\W_]?job|anal|orgasm)\b/i,
+];
+
+export interface ContentValidationResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Lightweight client-side moderation for an uploaded image file. Currently
+ * inspects the filename for explicit content markers; returns `ok:false` when
+ * the upload should be blocked before any transaction is initiated.
+ */
+export function validateImageContent(file: File): ContentValidationResult {
+  const name = (file.name || "").toLowerCase();
+  if (EXPLICIT_IMAGE_PATTERNS.some((re) => re.test(name))) {
+    return { ok: false, reason: "explicit" };
+  }
+  return { ok: true };
 }

@@ -366,7 +366,13 @@ export function BaseBoardCanvas() {
       if (map.size === 0) return;
 
       const me = address?.toLowerCase();
-      const drawImages = cam.scale >= IMAGE_MIN_SCALE;
+      // Always render images at every zoom level — even fully zoomed out, where
+      // a multi-plot billboard shrinks to a few pixels. (Previously gated behind
+      // IMAGE_MIN_SCALE, which made artwork vanish on zoom-out.) The expensive
+      // per-cell clip is only used when zoomed in enough to matter; when zoomed
+      // out we draw across the span bbox for cheapness.
+      const drawImages = true;
+      const preciseClip = cam.scale >= IMAGE_MIN_SCALE;
 
       // Bucket loaded plots by `${owner}|${imageUri}`. An image reference may
       // carry a `#bb=x1,y1,x2,y2` zone fragment telling us to span a multi-plot
@@ -413,7 +419,11 @@ export function BaseBoardCanvas() {
         ctx.fillRect(sx, sy, marker, marker);
 
         if (plot.imageUri) {
-          const key = `${plot.owner.toLowerCase()}|${plot.imageUri}`;
+          // Key on owner + image *content* (zone fragment stripped) so the SAME
+          // artwork applied across separately-purchased adjacent batches stitches
+          // into one unified billboard instead of fragmenting per batch.
+          const key = `${plot.owner.toLowerCase()}|${stripZone(plot.imageUri)}`;
+          const zone = parseZone(plot.imageUri);
           const g = groups.get(key);
           if (g) {
             g.x1 = Math.min(g.x1, x);
@@ -421,11 +431,22 @@ export function BaseBoardCanvas() {
             g.x2 = Math.max(g.x2, x);
             g.y2 = Math.max(g.y2, y);
             g.cells.push({ x, y });
+            // Union any zone so a multi-anchor billboard spans the full area.
+            if (zone) {
+              if (g.zone) {
+                g.zone.x1 = Math.min(g.zone.x1, zone.x1);
+                g.zone.y1 = Math.min(g.zone.y1, zone.y1);
+                g.zone.x2 = Math.max(g.zone.x2, zone.x2);
+                g.zone.y2 = Math.max(g.zone.y2, zone.y2);
+              } else {
+                g.zone = zone;
+              }
+            }
           } else {
             groups.set(key, {
               owner: plot.owner.toLowerCase(),
               uri: plot.imageUri,
-              zone: parseZone(plot.imageUri),
+              zone,
               x1: x,
               y1: y,
               x2: x,
@@ -456,7 +477,11 @@ export function BaseBoardCanvas() {
 
           ctx.save();
           ctx.beginPath();
-          if (g.zone) {
+          if (!preciseClip) {
+            // Zoomed out: cells are sub-pixel, so a precise per-cell clip is
+            // wasted work — draw the artwork across the whole span bbox cheaply.
+            ctx.rect(dx, dy, w, h);
+          } else if (g.zone) {
             // Clip to the owner's loaded cells inside the zone so the image
             // never bleeds onto plots they don't own. Fall back to the full
             // bbox before neighbouring cells have loaded.
