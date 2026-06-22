@@ -27,10 +27,28 @@ export const MAX_ONCHAIN_IMAGE_BYTES = 12 * 1024;
  * Largest *source* file a user may pick before we compress it for the chain.
  * The on-chain payload is always downscaled to `MAX_ONCHAIN_IMAGE_BYTES`; this
  * only caps the original device upload so a multi-megabyte file is rejected
- * cleanly (and an API route, if added later, can mirror this with a `5mb`
- * `bodyParser.sizeLimit`). Raised to 5 MB per product requirements.
+ * cleanly (and an API route, if added later, can mirror this with a `20mb`
+ * `bodyParser.sizeLimit`). Raised to 20 MB per product requirements.
  */
-export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Longest-side ceiling (in CSS px) for the *decoded* bitmap before compression.
+ * A phone photo can be 4000+ px on its longest side; decoding it at full
+ * resolution allocates a huge bitmap and can OOM-crash mobile webviews. We cap
+ * the decode to this dimension scaled by devicePixelRatio (clamped to 2×) using
+ * `createImageBitmap`'s native resize. This is well above the ~640 px the
+ * compressor ever needs, so it costs no visible quality.
+ */
+const DECODE_MAX_DIM = 768;
+
+function decodeMaxDim(): number {
+  const dpr =
+    typeof window !== "undefined"
+      ? Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+      : 1;
+  return Math.round(DECODE_MAX_DIM * dpr);
+}
 
 /**
  * Target budget we try to hit while compressing. Use almost the entire on-chain
@@ -101,7 +119,7 @@ function supportsWebp(): boolean {
   return _webpSupport;
 }
 
-/** Load a File into an HTMLImageElement. */
+/** Load a File into an HTMLImageElement (fallback decode path). */
 function loadImage(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -116,40 +134,72 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
+/** A decoded, already-downsampled image source ready for re-encoding. */
+interface DecodedImage {
+  src: CanvasImageSource;
+  width: number;
+  height: number;
+  /** Release any Bitmap memory held by the source. */
+  close: () => void;
+}
+
 /**
- * Render `img` into a canvas whose longest side is `maxDim`.
+ * Decode `file` with decode-time downsampling.
  *
- * When `aspect` (width / height) is provided the output canvas is shaped to
- * that aspect ratio and the source image is *cover-fitted* (centred crop, no
- * distortion) into it — so a banner uploaded for a multi-plot zone is stored
- * already matching the zone's shape and the canvas renderer can stretch it 1:1.
- * Without `aspect` the source's own aspect ratio is preserved.
+ * Uses `createImageBitmap` with native `resize*` options so a multi-megapixel
+ * photo is scaled down as part of decoding. The longest side is capped at
+ * `decodeMaxDim()`. The intrinsic-size probe bitmap is `.close()`d immediately.
+ * Falls back to an `<img>` decode where `createImageBitmap` is unavailable.
+ * Always `.close()` the returned source when done.
+ */
+async function decodeDownsampled(file: File): Promise<DecodedImage> {
+  if (typeof createImageBitmap === "function") {
+    // First pass to learn the intrinsic dimensions.
+    const probe = await createImageBitmap(file);
+    const longest = Math.max(probe.width, probe.height);
+    const cap = decodeMaxDim();
+    const scale = longest > cap ? cap / longest : 1;
+    const resizeWidth = Math.max(1, Math.round(probe.width * scale));
+    const resizeHeight = Math.max(1, Math.round(probe.height * scale));
+    // Re-decode at the target resolution (explicitly, even when scale === 1).
+    const bmp = await createImageBitmap(file, {
+      resizeWidth,
+      resizeHeight,
+      resizeQuality: "high",
+    });
+    probe.close();
+    return {
+      src: bmp,
+      width: bmp.width,
+      height: bmp.height,
+      close: () => bmp.close(),
+    };
+  }
+
+  const img = await loadImage(file);
+  return {
+    src: img,
+    width: img.naturalWidth,
+    height: img.naturalHeight,
+    close: () => {},
+  };
+}
+
+/**
+ * Re-encode `src` into a data URI whose longest side is at most `maxDim`,
+ * always preserving the source's own aspect ratio (no cropping). Placement into
+ * a multi-plot zone is handled at render time via contain-fit (letterbox), so
+ * the bytes we store keep the whole picture instead of a cover-cropped slice.
  */
 function encode(
-  img: HTMLImageElement,
+  src: DecodedImage,
   maxDim: number,
   mime: string,
   quality: number,
-  aspect?: number,
 ): { dataUri: string; width: number; height: number } {
-  let width: number;
-  let height: number;
-  if (aspect && aspect > 0) {
-    if (aspect >= 1) {
-      width = maxDim;
-      height = Math.max(1, Math.round(maxDim / aspect));
-    } else {
-      height = maxDim;
-      width = Math.max(1, Math.round(maxDim * aspect));
-    }
-  } else {
-    const ratio = Math.min(
-      1,
-      maxDim / Math.max(img.naturalWidth, img.naturalHeight),
-    );
-    width = Math.max(1, Math.round(img.naturalWidth * ratio));
-    height = Math.max(1, Math.round(img.naturalHeight * ratio));
-  }
+  const ratio = Math.min(1, maxDim / Math.max(src.width, src.height));
+  const width = Math.max(1, Math.round(src.width * ratio));
+  const height = Math.max(1, Math.round(src.height * ratio));
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -158,22 +208,7 @@ function encode(
   if (!ctx) throw new Error("Canvas not supported");
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-
-  // Cover-fit: pick the centred source rectangle matching the dest aspect.
-  const destAspect = width / height;
-  const srcAspect = img.naturalWidth / img.naturalHeight;
-  let sx = 0;
-  let sy = 0;
-  let sw = img.naturalWidth;
-  let sh = img.naturalHeight;
-  if (srcAspect > destAspect) {
-    sw = Math.round(sh * destAspect);
-    sx = Math.round((img.naturalWidth - sw) / 2);
-  } else if (srcAspect < destAspect) {
-    sh = Math.round(sw / destAspect);
-    sy = Math.round((img.naturalHeight - sh) / 2);
-  }
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
+  ctx.drawImage(src.src, 0, 0, src.width, src.height, 0, 0, width, height);
   return { dataUri: canvas.toDataURL(mime, quality), width, height };
 }
 
@@ -186,45 +221,54 @@ export async function compressImageFile(
   file: File,
   opts: { aspect?: number; maxDim?: number } = {},
 ): Promise<CompressResult> {
-  const img = await loadImage(file);
-  const mime = supportsWebp() ? "image/webp" : "image/jpeg";
-  const { aspect, maxDim } = opts;
-  // Step dimensions / quality down until the data URI fits the on-chain budget
-  // (~10 KB target). The ladder starts at the resolution the *selected plots*
-  // actually need (so a 1×1 plot encodes tiny) and only shrinks from there.
-  const dims = dimLadder(maxDim ?? 512);
-  // Try high quality first at each size so we keep the crispest encode that
-  // still fits the (now near-maximal) byte budget.
-  const qualities = [0.94, 0.88, 0.82, 0.74, 0.64, 0.54, 0.44, 0.34, 0.28];
+  const decoded = await decodeDownsampled(file);
+  try {
+    const mime = supportsWebp() ? "image/webp" : "image/jpeg";
+    const { maxDim } = opts;
+    // Step dimensions / quality down until the data URI fits the on-chain budget
+    // (~10 KB target). The ladder starts at the resolution the *selected plots*
+    // actually need (so a 1×1 plot encodes tiny) and only shrinks from there.
+    const dims = dimLadder(maxDim ?? 512);
+    // Try high quality first at each size so we keep the crispest encode that
+    // still fits the (now near-maximal) byte budget.
+    const qualities = [0.94, 0.88, 0.82, 0.74, 0.64, 0.54, 0.44, 0.34, 0.28];
 
-  let smallest: { dataUri: string; width: number; height: number } | null = null;
+    let smallest: {
+      dataUri: string;
+      width: number;
+      height: number;
+    } | null = null;
 
-  for (const dim of dims) {
-    for (const q of qualities) {
-      const out = encode(img, dim, mime, q, aspect);
-      if (!smallest || out.dataUri.length < smallest.dataUri.length) {
-        smallest = out;
-      }
-      if (out.dataUri.length <= TARGET_BYTES) {
-        return {
-          dataUri: out.dataUri,
-          bytes: out.dataUri.length,
-          width: out.width,
-          height: out.height,
-          tooLarge: false,
-        };
+    for (const dim of dims) {
+      for (const q of qualities) {
+        const out = encode(decoded, dim, mime, q);
+        if (!smallest || out.dataUri.length < smallest.dataUri.length) {
+          smallest = out;
+        }
+        if (out.dataUri.length <= TARGET_BYTES) {
+          return {
+            dataUri: out.dataUri,
+            bytes: out.dataUri.length,
+            width: out.width,
+            height: out.height,
+            tooLarge: false,
+          };
+        }
       }
     }
-  }
 
-  const best = smallest!;
-  return {
-    dataUri: best.dataUri,
-    bytes: best.dataUri.length,
-    width: best.width,
-    height: best.height,
-    tooLarge: best.dataUri.length > MAX_ONCHAIN_IMAGE_BYTES,
-  };
+    const best = smallest!;
+    return {
+      dataUri: best.dataUri,
+      bytes: best.dataUri.length,
+      width: best.width,
+      height: best.height,
+      tooLarge: best.dataUri.length > MAX_ONCHAIN_IMAGE_BYTES,
+    };
+  } finally {
+    // Release the decoded bitmap immediately after baking the data URI.
+    decoded.close();
+  }
 }
 
 // ---------------------------------------------------------------------------

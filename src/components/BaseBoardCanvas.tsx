@@ -119,6 +119,10 @@ export function BaseBoardCanvas() {
   const imageCacheRef = useRef<Map<string, HTMLImageElement | "error">>(
     new Map(),
   );
+  // Baked, letterboxed (contain-fit) bitmaps keyed by image content + zone
+  // aspect. The contain-fit math runs once here, not per frame — the render
+  // loop only blits these onto the destination rect.
+  const bakedCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const [, forceTick] = useState(0);
   const requestRedraw = useCallback(() => {
     dirtyRef.current = true;
@@ -543,7 +547,10 @@ export function BaseBoardCanvas() {
           }
           ctx.clip();
           try {
-            drawCover(ctx, img, dx, dy, w, h);
+            // Blit the pre-baked, letterboxed bitmap (contain-fit done once in
+            // getBaked) across the span — zero per-frame image fit math.
+            const baked = getBaked(g.uri, img, bx2 - bx1 + 1, by2 - by1 + 1);
+            if (baked) ctx.drawImage(baked, dx, dy, w, h);
           } catch {
             /* tainted/broken image — fill already drawn underneath */
           }
@@ -593,6 +600,56 @@ export function BaseBoardCanvas() {
       img.src = resolveUri(stripZone(uri));
       cache.set(uri, img);
       return img;
+    },
+    [],
+  );
+
+  /**
+   * Bake `img` letterboxed (contain-fit, no crop) into an offscreen canvas
+   * shaped to the zone's cell aspect ratio, caching by content + aspect. The
+   * destination rect drawn each frame shares that aspect, so blitting the baked
+   * canvas is distortion-free and the letterbox bars stay transparent. Returns
+   * null until the source image has finished decoding.
+   */
+  const getBaked = useCallback(
+    (
+      uri: string,
+      img: HTMLImageElement,
+      cellsW: number,
+      cellsH: number,
+    ): HTMLCanvasElement | null => {
+      const iw = img.naturalWidth;
+      const ih = img.naturalHeight;
+      if (!iw || !ih || cellsW <= 0 || cellsH <= 0) return null;
+      const aspect = cellsW / cellsH;
+      const key = `${stripZone(uri)}|${aspect.toFixed(4)}`;
+      const cache = bakedCacheRef.current;
+      const hit = cache.get(key);
+      if (hit) return hit;
+
+      // Canvas matches the zone aspect; longest side capped so memory stays
+      // bounded (the on-chain source is already small, so this never upscales
+      // meaningfully).
+      const BAKE_MAX = 1024;
+      let cw: number;
+      let ch: number;
+      if (aspect >= 1) {
+        cw = BAKE_MAX;
+        ch = Math.max(1, Math.round(BAKE_MAX / aspect));
+      } else {
+        ch = BAKE_MAX;
+        cw = Math.max(1, Math.round(BAKE_MAX * aspect));
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = cw;
+      canvas.height = ch;
+      const c = canvas.getContext("2d");
+      if (!c) return null;
+      c.imageSmoothingEnabled = true;
+      c.imageSmoothingQuality = "high";
+      drawContain(c, img, 0, 0, cw, ch);
+      cache.set(key, canvas);
+      return canvas;
     },
     [],
   );
@@ -1322,41 +1379,30 @@ export function BaseBoardCanvas() {
 }
 
 /**
- * Draw `img` into the destination rect using "cover" logic — the image is
- * scaled to fill the whole rect while preserving its aspect ratio, cropping the
- * overflow (centered). Mirrors CSS `background-size: cover`.
+ * Draw `img` into the destination rect using "contain" logic — the image is
+ * scaled to fit entirely inside the rect with no cropping, centered, leaving
+ * transparent letterbox bars on the short axis. Mirrors CSS `object-fit:
+ * contain`. Uses the 9-argument `drawImage` form against the full source.
  */
-function drawCover(
+function drawContain(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
+  img: CanvasImageSource & { naturalWidth?: number; naturalHeight?: number },
   dx: number,
   dy: number,
   dw: number,
   dh: number,
 ): void {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
+  const iw =
+    img.naturalWidth ?? (img as { width?: number }).width ?? 0;
+  const ih =
+    img.naturalHeight ?? (img as { height?: number }).height ?? 0;
   if (!iw || !ih || dw <= 0 || dh <= 0) return;
-  const dAR = dw / dh;
-  const sAR = iw / ih;
-  let sw: number;
-  let sh: number;
-  let sx: number;
-  let sy: number;
-  if (sAR > dAR) {
-    // Source is wider than dest → crop left/right.
-    sh = ih;
-    sw = ih * dAR;
-    sx = (iw - sw) / 2;
-    sy = 0;
-  } else {
-    // Source is taller than dest → crop top/bottom.
-    sw = iw;
-    sh = iw / dAR;
-    sx = 0;
-    sy = (ih - sh) / 2;
-  }
-  ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+  const scale = Math.min(dw / iw, dh / ih);
+  const drawW = iw * scale;
+  const drawH = ih * scale;
+  const offsetX = (dw - drawW) / 2;
+  const offsetY = (dh - drawH) / 2;
+  ctx.drawImage(img, 0, 0, iw, ih, dx + offsetX, dy + offsetY, drawW, drawH);
 }
 
 /** Resolve ipfs:// URIs (and bare CIDs) to an HTTP gateway. */
