@@ -74,11 +74,20 @@ export const APP_URL = (
 ).replace(/\/+$/, "");
 
 /**
+ * Cache-buster appended to every icon URL. Bump this whenever the logo asset
+ * changes so aggressive caches (notably the BaseApp / Coinbase Wallet in-app
+ * browser) treat it as a brand-new file and re-fetch our branding.
+ */
+export const ICON_VERSION = "2";
+export const ICON_CACHE_BUST = `?v=${ICON_VERSION}`;
+
+/**
  * Absolute URL to the custom BaseBoard "B" logo (Görsel 5). Used for every
  * dApp / wallet metadata icon (Coinbase Wallet `appLogoUrl`, WalletConnect
- * `metadata.icons`) so BaseApp fetches our branding instead of a default.
+ * `metadata.icons`). A full absolute URL (not a relative `/icon.png`) is
+ * required because BaseApp fails to resolve relative icon paths.
  */
-export const APP_LOGO_URL = `${APP_URL}/icon.png`;
+export const APP_LOGO_URL = `${APP_URL}/icon.png${ICON_CACHE_BUST}`;
 
 // ---------------------------------------------------------------------------
 // Multi-chain configuration (Base + Celo)

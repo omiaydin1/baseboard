@@ -12,6 +12,8 @@
  * structurally valid, fetchable document without it.
  */
 
+import { ICON_CACHE_BUST } from "@/lib/constants";
+
 export const dynamic = "force-dynamic";
 
 function baseUrl(req: Request): string {
@@ -59,11 +61,11 @@ export function GET(req: Request) {
       subtitle: "10,000,000 plots on Base",
       description:
         "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
-      iconUrl: `${url}/icon.png`,
+      iconUrl: `${url}/icon.png${ICON_CACHE_BUST}`,
       homeUrl: url,
       imageUrl: `${url}/og.png`,
       buttonTitle: "Open BaseBoard",
-      splashImageUrl: `${url}/icon.png`,
+      splashImageUrl: `${url}/icon.png${ICON_CACHE_BUST}`,
       splashBackgroundColor: "#ffffff",
       primaryCategory: "art-creativity",
     },

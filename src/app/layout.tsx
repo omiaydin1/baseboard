@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "@coinbase/onchainkit/styles.css";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
-import { APP_URL } from "@/lib/constants";
+import { APP_URL, ICON_CACHE_BUST } from "@/lib/constants";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,12 +26,20 @@ export const metadata: Metadata = {
   // (Görsel 5) instead of a framework default.
   icons: {
     icon: [
-      { url: "/favicon.ico", sizes: "any" },
-      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
-      { url: "/icon-512.png", type: "image/png", sizes: "512x512" },
+      { url: `${APP_URL}/favicon.ico${ICON_CACHE_BUST}`, sizes: "any" },
+      {
+        url: `${APP_URL}/icon-192.png${ICON_CACHE_BUST}`,
+        type: "image/png",
+        sizes: "192x192",
+      },
+      {
+        url: `${APP_URL}/icon-512.png${ICON_CACHE_BUST}`,
+        type: "image/png",
+        sizes: "512x512",
+      },
     ],
-    shortcut: "/icon-192.png",
-    apple: "/apple-icon.png",
+    shortcut: `${APP_URL}/icon-192.png${ICON_CACHE_BUST}`,
+    apple: `${APP_URL}/apple-icon.png${ICON_CACHE_BUST}`,
   },
   other: {
     "base:app_id": "6a29aec065478aa1565a99bb",
