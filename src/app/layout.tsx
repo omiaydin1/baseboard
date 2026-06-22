@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "@coinbase/onchainkit/styles.css";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
-import { APP_URL, ICON_CACHE_BUST } from "@/lib/constants";
+import { APP_URL } from "@/lib/constants";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -21,26 +21,9 @@ export const metadata: Metadata = {
   description:
     "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
   manifest: "/manifest.webmanifest",
-  // Force every browser/dApp chrome (incl. the BaseApp / Coinbase Wallet
-  // in-app browser nav bar) to fetch the custom pixelated blue "B" logo
-  // (Görsel 5) instead of a framework default.
-  icons: {
-    icon: [
-      { url: `${APP_URL}/favicon.ico${ICON_CACHE_BUST}`, sizes: "any" },
-      {
-        url: `${APP_URL}/icon-192.png${ICON_CACHE_BUST}`,
-        type: "image/png",
-        sizes: "192x192",
-      },
-      {
-        url: `${APP_URL}/icon-512.png${ICON_CACHE_BUST}`,
-        type: "image/png",
-        sizes: "512x512",
-      },
-    ],
-    shortcut: `${APP_URL}/icon-192.png${ICON_CACHE_BUST}`,
-    apple: `${APP_URL}/apple-icon.png${ICON_CACHE_BUST}`,
-  },
+  // Icons are served via App Router file-based metadata
+  // (app/favicon.ico, app/icon.png, app/apple-icon.png) — no manual `icons`
+  // array so the auto-detected files are the single source of truth.
   other: {
     "base:app_id": "6a29aec065478aa1565a99bb",
     "talentapp:project_verification":
