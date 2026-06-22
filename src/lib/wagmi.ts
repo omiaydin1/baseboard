@@ -7,7 +7,7 @@ import {
 } from "wagmi";
 import { base, celo, hardhat } from "wagmi/chains";
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
-import { DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
+import { APP_LOGO_URL, APP_URL, DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
 
 const LOCAL_RPC = "http://127.0.0.1:8545";
 
@@ -25,6 +25,7 @@ export const BASE_WALLET_ID = "baseWallet";
 function baseWalletConnector(): CreateConnectorFn {
   const inner = coinbaseWallet({
     appName: "BaseBoard",
+    appLogoUrl: APP_LOGO_URL,
     preference: "smartWalletOnly",
   });
   return (params) => {
@@ -111,6 +112,7 @@ export function getWagmiConfig() {
   const connectors = [
     coinbaseWallet({
       appName: "BaseBoard",
+      appLogoUrl: APP_LOGO_URL,
       preference: "all",
     }),
     baseWalletConnector(),
@@ -120,6 +122,13 @@ export function getWagmiConfig() {
           walletConnect({
             projectId: WALLETCONNECT_PROJECT_ID,
             showQrModal: true,
+            metadata: {
+              name: "BaseBoard",
+              description:
+                "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+              url: APP_URL,
+              icons: [APP_LOGO_URL],
+            },
           }),
         ]
       : []),
