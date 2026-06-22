@@ -8,12 +8,10 @@ interface LogoProps {
 }
 
 /**
- * Modern square "Basemark" — the white Base disc (flat right edge) on the
- * #0052FF rounded square. The flat edge is produced with a clip so it renders
- * crisply at any size.
+ * Official modern Base brand mark — "The Square": a clean solid #0052FF
+ * rounded square. Scales crisply at any size.
  */
 export function BaseLogo({ size = 20, className }: LogoProps) {
-  const clipId = "baseflat";
   return (
     <svg
       width={size}
@@ -22,13 +20,7 @@ export function BaseLogo({ size = 20, className }: LogoProps) {
       className={className}
       aria-hidden="true"
     >
-      <defs>
-        <clipPath id={clipId}>
-          <rect x="0" y="0" width="22.2" height="32" />
-        </clipPath>
-      </defs>
-      <rect width="32" height="32" rx="7" fill="#0052FF" />
-      <circle cx="16" cy="16" r="8.7" fill="#FFFFFF" clipPath={`url(#${clipId})`} />
+      <rect width="32" height="32" rx="6" fill="#0052FF" />
     </svg>
   );
 }
