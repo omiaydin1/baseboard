@@ -838,7 +838,7 @@ function ImageUploader({
       setError(
         `That file is ${(file.size / (1024 * 1024)).toFixed(
           1,
-        )} MB — the maximum upload size is 5 MB.`,
+        )} MB — the maximum upload size is 20 MB.`,
       );
       return;
     }
@@ -951,7 +951,7 @@ function ImageUploader({
         <img
           src={previewSrc(value)}
           alt="preview"
-          className="w-full rounded-lg border border-blue-100 object-cover"
+          className="w-full rounded-lg border border-blue-100 bg-slate-50 object-contain"
           style={
             aspect
               ? { aspectRatio: String(aspect), maxHeight: "14rem" }

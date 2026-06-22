@@ -11,6 +11,20 @@ import { APP_LOGO_URL, APP_URL, DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./co
 
 const LOCAL_RPC = "http://127.0.0.1:8545";
 
+/**
+ * ERC-8021 Base Builder Code attribution suffix for `bc_ztv4rk1x`.
+ *
+ * viem appends this hex to the end of every transaction's calldata (after the
+ * ABI-encoded payload). The EVM ignores trailing calldata, and our contract has
+ * no `msg.data` length / raw-decode checks, so this is a safe, purely additive
+ * change that credits BaseBoard's onchain volume on base.dev. Decodes to the
+ * builder code: `62635f7a747634726b3178` == "bc_ztv4rk1x". Applied to Base only
+ * (see `dataSuffix` in `getWagmiConfig`) — Celo transactions are untouched.
+ */
+export const BASE_BUILDER_CODE = "bc_ztv4rk1x";
+export const BASE_DATA_SUFFIX =
+  "0x62635f7a747634726b31780b0080218021802180218021802180218021" as const;
+
 /** Stable connector ids so the UI can label / guard each row explicitly. */
 export const COINBASE_WALLET_ID = "coinbaseWalletSDK";
 export const BASE_WALLET_ID = "baseWallet";
@@ -154,6 +168,11 @@ export function getWagmiConfig() {
     transports: {
       [base.id]: http(),
       [celo.id]: http(),
+    },
+    // ERC-8021 attribution applied to the Base client only. The per-chain map
+    // form leaves Celo's client without a suffix, so Celo calldata is untouched.
+    dataSuffix: {
+      [base.id]: BASE_DATA_SUFFIX,
     },
   });
 }
