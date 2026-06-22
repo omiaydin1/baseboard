@@ -23,7 +23,7 @@ export default function Home() {
       <NetworkGuard />
 
       {/* Top bar: stats dashboard + actions */}
-      <header className="border-b border-blue-100 bg-white/90 px-3 py-1 backdrop-blur sm:px-4 sm:py-1.5">
+      <header className="relative z-30 border-b border-blue-100 bg-white/90 px-3 py-1 backdrop-blur sm:px-4 sm:py-1.5">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex-1">
             <StatsDashboard />
@@ -46,7 +46,7 @@ export default function Home() {
       <main className="flex flex-1 flex-col items-center overflow-hidden px-4 pt-0.5">
         <HangingHeader />
 
-        <div className="relative z-10 -mt-[6px] w-full max-w-7xl flex-1 overflow-hidden rounded-[16px] border-[5px] border-base-blue bg-white shadow-frame sm:-mt-[9px] sm:rounded-[22px] sm:border-[9px]">
+        <div className="relative z-10 mt-2 w-full max-w-7xl flex-1 overflow-hidden rounded-[16px] border-[5px] border-base-blue bg-white shadow-frame sm:rounded-[22px] sm:border-[9px]">
           {/* inner shadow ring to enhance the "framed canvas" depth */}
           <div className="pointer-events-none absolute inset-0 z-10 rounded-[10px] shadow-[inset_0_0_20px_rgba(0,82,255,0.12)] sm:rounded-[16px] sm:shadow-[inset_0_0_30px_rgba(0,82,255,0.12)]" />
           <BaseBoardCanvas />
