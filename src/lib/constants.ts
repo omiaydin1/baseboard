@@ -68,6 +68,18 @@ export const ONCHAINKIT_API_KEY =
 export const WALLETCONNECT_PROJECT_ID =
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
 
+/** Public origin of the deployed app, used for absolute asset/metadata URLs. */
+export const APP_URL = (
+  process.env.NEXT_PUBLIC_APP_URL || "https://base-board-pixel.vercel.app"
+).replace(/\/+$/, "");
+
+/**
+ * Absolute URL to the custom BaseBoard "B" logo (Görsel 5). Used for every
+ * dApp / wallet metadata icon (Coinbase Wallet `appLogoUrl`, WalletConnect
+ * `metadata.icons`) so BaseApp fetches our branding instead of a default.
+ */
+export const APP_LOGO_URL = `${APP_URL}/icon.png`;
+
 // ---------------------------------------------------------------------------
 // Multi-chain configuration (Base + Celo)
 // ---------------------------------------------------------------------------
