@@ -4,6 +4,7 @@ import "@coinbase/onchainkit/styles.css";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { APP_URL } from "@/lib/constants";
+import { Analytics } from "@vercel/analytics/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -47,6 +48,7 @@ export default function RootLayout({
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body className="min-h-screen bg-white font-sans text-slate-900 antialiased">
         <Providers>{children}</Providers>
+        <Analytics />
       </body>
     </html>
   );
