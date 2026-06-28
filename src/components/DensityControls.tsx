@@ -4,13 +4,12 @@ import { DENSITY_BANDS, densitySwatch } from "@/lib/density";
 import { useBoardStore } from "@/store/useBoardStore";
 
 /**
- * Bottom-centered control bar for the purchase-density heatmap, overlaid on the
- * board frame. Holds the on/off toggle ("Density") plus the activity ruler that
- * was previously in the page footer — the ruler's gradient is built from the
- * same `densitySwatch` levels the overlay uses, so it stays an accurate key.
+ * Horizontally-centered control bar for the purchase-density heatmap, rendered
+ * outside and below the board frame. Holds the on/off toggle ("Density") plus
+ * the activity ruler — the ruler's gradient is built from the same
+ * `densitySwatch` levels the overlay uses, so it stays an accurate key.
  *
- * Hidden while the tap-to-buy basket bar is active (which occupies the same
- * bottom-center spot) so the two never collide.
+ * Hidden while the tap-to-buy basket bar is active so the two never collide.
  */
 export function DensityControls() {
   const enabled = useBoardStore((s) => s.densityEnabled);
@@ -25,7 +24,7 @@ export function DensityControls() {
   )})`;
 
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2.5 rounded-xl border-2 border-blue-100 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur sm:gap-3 sm:px-3">
+    <div className="flex items-center gap-2.5 rounded-xl border-2 border-blue-100 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur sm:gap-3 sm:px-3">
       <button
         type="button"
         role="switch"
