@@ -9,8 +9,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "compile": "npx hardhat compile",
-    "deploy": "npx hardhat run scripts/deploy.cjs --network base",
-    "deploy:celo": "npx hardhat run scripts/deploy-celo.cjs --network celo"
+    "deploy": "npx hardhat run scripts/deploy.cjs --network base"
   },
   "dependencies": {
     "@coinbase/onchainkit": "^1.1.2",

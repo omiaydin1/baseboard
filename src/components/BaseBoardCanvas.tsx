@@ -791,7 +791,7 @@ export function BaseBoardCanvas() {
     }
   }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock]);
 
-  // State isolation: when the active chain changes (Base <-> Celo), wipe every
+  // State isolation: when the active chain changes, wipe every
   // cached plot, the minted-id set, the log-scan cursor, decoded images and any
   // optimistic overrides so we never show one network's board on another. The
   // load effects below re-run automatically (their callbacks are rebuilt from

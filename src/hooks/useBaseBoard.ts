@@ -9,7 +9,7 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
-import { base, celo, hardhat } from "viem/chains";
+import { base, hardhat } from "viem/chains";
 import type { Chain } from "viem";
 import { baseBoardAbi } from "@/lib/contract";
 import {
@@ -26,8 +26,6 @@ import { parseLink, parseZone } from "@/lib/image";
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
   switch (chainId) {
-    case celo.id:
-      return celo;
     case hardhat.id:
       return hardhat;
     default:
@@ -230,8 +228,8 @@ export function useBaseBoardWrite() {
   type WriteAsync = typeof writeContractAsync;
   const writeContractAsyncGuarded = useCallback<WriteAsync>(
     ((variables, options) => {
-      // Pin every write to the *active* chain (Base or Celo) so transactions
-      // always land on the network whose contract the UI is reading from.
+      // Pin every write to the active chain (Base) so transactions always land
+      // on the network whose contract the UI is reading from.
       const cfg = getChainConfig(chainId) ?? DEFAULT_CHAIN_CONFIG;
       const targetChainId = cfg.chainId;
       const targetChain = viemChainFor(targetChainId);

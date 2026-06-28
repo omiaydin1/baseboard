@@ -9,11 +9,10 @@ import {
   useSwitchChain,
   type Connector,
 } from "wagmi";
-import { BASE_CHAIN_ID, CELO_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
+import { BASE_CHAIN_ID, DEV_LOCAL } from "@/lib/constants";
 import { BASE_WALLET_ID, COINBASE_WALLET_ID } from "@/lib/wagmi";
 import { shortAddress } from "@/lib/coords";
 import { useBaseName } from "@/hooks/useBaseName";
-import { useCeloName } from "@/hooks/useCeloName";
 import { BaseLogo } from "./ChainLogos";
 import { Spinner } from "./Spinner";
 import { Modal } from "./Modal";
@@ -87,10 +86,8 @@ function ConnectorIcon({ connector }: { connector: Connector }) {
 }
 
 /**
- * Connect / account button. Disconnected, it always shows a single clean
- * "Connect Wallet" button that opens a wallet-selection modal. Coinbase Smart
- * Wallet is offered everywhere *except* Celo (which it cannot transact on),
- * where users are steered to MetaMask / Rabby / WalletConnect.
+ * Connect / account button. Disconnected, it shows a single clean
+ * "Connect Wallet" button that opens a wallet-selection modal.
  */
 export function WalletConnect() {
   // Dev-only: connect straight to the injected local provider so the full flow
@@ -103,31 +100,27 @@ export function WalletConnect() {
 function ChainAwareWalletConnect() {
   const chainId = useChainId();
   const { isConnected } = useAccount();
-  const isCelo = chainId === CELO_CHAIN_ID;
 
   // Connected: keep the OnchainKit account dropdown on Base (resolves basenames,
-  // click toggles a dropdown with Disconnect). On Celo use a matching custom
-  // account button + dropdown (OnchainKit identity is Base-only). On any other
-  // (unsupported) network, enforce a one-tap switch to Base. Celo is left
-  // entirely untouched.
+  // click toggles a dropdown with Disconnect). On any other (unsupported)
+  // network, enforce a one-tap switch to Base.
   if (isConnected) {
-    if (isCelo) return <CeloConnected />;
     if (chainId !== BASE_CHAIN_ID) return <SwitchToBaseButton />;
     return <BaseConnected />;
   }
 
-  return <ConnectWalletButton hideCoinbase={isCelo} />;
+  return <ConnectWalletButton />;
 }
 
 /** Single "Connect Wallet" button + a modal listing the available wallets. */
-function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
+function ConnectWalletButton() {
   const [open, setOpen] = useState(false);
   const { connect, connectors, isPending } = useConnect();
 
   // Build the wallet list so something is ALWAYS visible — including inside
   // mobile / BaseApp webviews where no EIP-6963 wallets are announced.
   //  1. Explicit per-wallet rows detected via EIP-6963 (MetaMask/Rabby/OKX/…).
-  //  2. Coinbase Wallet + Base Wallet (native onboarding; hidden on Celo).
+  //  2. Coinbase Wallet + Base Wallet (native onboarding).
   //  3. WalletConnect (mobile deep-link / QR).
   //  4. A generic "Browser Wallet" fallback only when no EIP-6963 wallet was
   //     detected, so in-app webviews with a bare window.ethereum still connect.
@@ -151,10 +144,8 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
   const add = (c?: Connector) => {
     if (c && !list.some((x) => x.id === c.id)) list.push(c);
   };
-  if (!hideCoinbase) {
-    add(baseWallet);
-    add(coinbase);
-  }
+  add(baseWallet);
+  add(coinbase);
   add(metamask);
   otherDetected.forEach(add);
   add(walletConnectC);
@@ -198,12 +189,6 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
               browser, or install MetaMask / Rabby / Coinbase Wallet to connect.
             </p>
           )}
-          {hideCoinbase && (
-            <p className="mt-1 text-[11px] leading-tight text-slate-500">
-              Coinbase &amp; Base Wallet aren&apos;t supported on Celo — connect
-              with MetaMask, Rabby or WalletConnect.
-            </p>
-          )}
         </div>
       </Modal>
     </>
@@ -212,8 +197,8 @@ function ConnectWalletButton({ hideCoinbase }: { hideCoinbase: boolean }) {
 
 /**
  * Wrong-network enforcement: when a connected wallet is on a network other than
- * Base (and not Celo, which has its own flow), the button reads "SWITCH TO
- * BASE" and a tap fires `wallet_switchEthereumChain` for Base Mainnet (8453).
+ * Base, the button reads "SWITCH TO BASE" and a tap fires
+ * `wallet_switchEthereumChain` for Base Mainnet (8453).
  */
 function SwitchToBaseButton() {
   const { switchChain, isPending } = useSwitchChain();
@@ -247,20 +232,6 @@ function BaseConnected() {
     <ConnectedAccount
       address={address}
       name={baseName}
-      onDisconnect={() => disconnect()}
-    />
-  );
-}
-
-/** Connected state on Celo: identity-resolving account button + dropdown. */
-function CeloConnected() {
-  const { address } = useAccount();
-  const { disconnect } = useDisconnect();
-  const celoName = useCeloName(address);
-  return (
-    <ConnectedAccount
-      address={address}
-      name={celoName}
       onDisconnect={() => disconnect()}
     />
   );

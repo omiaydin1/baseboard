@@ -4,7 +4,6 @@ import { BaseBoardCanvas } from "@/components/BaseBoardCanvas";
 import { HangingHeader } from "@/components/HangingHeader";
 import { StatsDashboard } from "@/components/StatsDashboard";
 import { WalletConnect } from "@/components/WalletConnect";
-import { NetworkSwitcher } from "@/components/NetworkSwitcher";
 import { NetworkGuard } from "@/components/NetworkGuard";
 import { ProfileDrawer } from "@/components/ProfileDrawer";
 import { PlotModal } from "@/components/PlotModal";
@@ -36,7 +35,6 @@ export default function Home() {
             >
               My Profile
             </button>
-            <NetworkSwitcher />
             <WalletConnect />
           </div>
         </div>
