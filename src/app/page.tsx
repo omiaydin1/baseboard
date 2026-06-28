@@ -12,7 +12,7 @@ import { NetworkSelector } from "@/components/NetworkSelector";
 import { PlotModal } from "@/components/PlotModal";
 import { BuyModal } from "@/components/BuyModal";
 import { Legend } from "@/components/Legend";
-import { DensityLegend } from "@/components/DensityLegend";
+import { DensityControls } from "@/components/DensityControls";
 import { Toaster } from "@/components/Toaster";
 import { PendingTxRecovery } from "@/components/PendingTxRecovery";
 import { AllMintedProvider } from "@/hooks/useAllMintedContext";
@@ -96,12 +96,13 @@ export default function Home() {
           {/* inner shadow ring to enhance the "framed canvas" depth */}
           <div className="pointer-events-none absolute inset-0 z-10 rounded-[10px] shadow-[inset_0_0_20px_rgba(0,82,255,0.12)] sm:rounded-[16px] sm:shadow-[inset_0_0_30px_rgba(0,82,255,0.12)]" />
           <BaseBoardCanvas />
+          {/* Heatmap toggle + activity ruler, centered on the canvas bottom. */}
+          <DensityControls />
         </div>
 
         <div className="my-2 flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Legend />
-            <DensityLegend />
           </div>
           <div className="flex items-center gap-3 text-xs text-slate-400">
             <p>

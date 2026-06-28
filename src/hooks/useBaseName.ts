@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   createPublicClient,
   encodePacked,
@@ -49,42 +49,91 @@ function reverseNode(address: Address, chainId: number): `0x${string}` {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Shared, deduplicated Basename cache
+// ---------------------------------------------------------------------------
+// A single process-wide cache + one shared RPC client backs every `useBaseName`
+// call. This guarantees the SAME address always renders the SAME identity in
+// every surface (header, profile, leaderboard rows, activity ticker) — the
+// previous per-component resolution could race so the same wallet showed its
+// Basename in one place and a raw address in another. It also collapses the
+// leaderboard's many simultaneous row lookups into one request per unique
+// address, which keeps resolution off the hot path and avoids RPC throttling.
+
+/** address(lowercase) -> resolved Basename (or null once known to have none). */
+const nameCache = new Map<string, string | null>();
+/** addresses with an in-flight lookup, so we never fetch the same one twice. */
+const inflight = new Set<string>();
+/** React subscribers notified whenever a lookup resolves. */
+const listeners = new Set<() => void>();
+
+function emit() {
+  for (const l of listeners) l();
+}
+
+function createSharedClient() {
+  const rpcUrl =
+    getChainConfig(BASE_CHAIN_ID)?.rpcUrl ?? "https://mainnet.base.org";
+  return createPublicClient({ chain: base, transport: http(rpcUrl) });
+}
+
+type SharedClient = ReturnType<typeof createSharedClient>;
+
+let sharedClient: SharedClient | null = null;
+function getClient(): SharedClient {
+  if (!sharedClient) sharedClient = createSharedClient();
+  return sharedClient;
+}
+
+function ensureResolved(key: string) {
+  if (nameCache.has(key) || inflight.has(key)) return;
+  inflight.add(key);
+  getClient()
+    .readContract({
+      address: BASENAME_L2_RESOLVER,
+      abi: L2_RESOLVER_ABI,
+      functionName: "name",
+      args: [reverseNode(key as Address, BASE_CHAIN_ID)],
+    })
+    .then((resolved) => {
+      nameCache.set(key, resolved && resolved.length > 0 ? resolved : null);
+    })
+    .catch(() => {
+      nameCache.set(key, null);
+    })
+    .finally(() => {
+      inflight.delete(key);
+      emit();
+    });
+}
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+
 /**
- * Resolve a connected wallet to its Basename (e.g. `omiaydin.base.eth`) by
- * reading the official Base Name registry's L2 resolver directly, instead of
- * relying on the OnchainKit wrapper. Returns null while loading or when the
- * address has no Basename, so callers fall back to the short hex address.
+ * Resolve a wallet to its Basename (e.g. `omiaydin.base.eth`) via the official
+ * Base Name L2 resolver, through a shared cache so the result is consistent
+ * everywhere and each address is fetched at most once. Returns null while
+ * loading or when the address has no Basename, so callers fall back to the
+ * short hex address.
  */
 export function useBaseName(address?: Address): string | null {
-  const [name, setName] = useState<string | null>(null);
+  const key =
+    address && isAddress(address) ? address.toLowerCase() : null;
+
+  const name = useSyncExternalStore(
+    subscribe,
+    () => (key ? nameCache.get(key) ?? null : null),
+    () => null,
+  );
 
   useEffect(() => {
-    setName(null);
-    if (!address || !isAddress(address)) return;
-
-    let cancelled = false;
-    const rpcUrl =
-      getChainConfig(BASE_CHAIN_ID)?.rpcUrl ?? "https://mainnet.base.org";
-    const client = createPublicClient({ chain: base, transport: http(rpcUrl) });
-
-    client
-      .readContract({
-        address: BASENAME_L2_RESOLVER,
-        abi: L2_RESOLVER_ABI,
-        functionName: "name",
-        args: [reverseNode(address, BASE_CHAIN_ID)],
-      })
-      .then((resolved) => {
-        if (!cancelled) setName(resolved && resolved.length > 0 ? resolved : null);
-      })
-      .catch(() => {
-        if (!cancelled) setName(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [address]);
+    if (key) ensureResolved(key);
+  }, [key]);
 
   return name;
 }

@@ -383,6 +383,25 @@ export function useAllMintedPlots(): AllMintedData {
     events: [],
   });
 
+  // Live refresh: re-scan whenever a `PlotsPurchased` event lands (anyone's
+  // purchase, not just the local wallet's) and on a slow safety interval, so the
+  // leaderboard ranking and activity ticker reflect real-time on-chain status.
+  const [liveTick, setLiveTick] = useState(0);
+
+  useWatchContractEvent({
+    address: cfg.contract,
+    abi: baseBoardAbi,
+    eventName: "PlotsPurchased",
+    enabled: cfg.isConfigured,
+    onLogs: () => setLiveTick((t) => t + 1),
+  });
+
+  useEffect(() => {
+    if (!cfg.isConfigured) return;
+    const id = setInterval(() => setLiveTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, [cfg.isConfigured]);
+
   const runningRef = useRef(false);
 
   useEffect(() => {
@@ -515,6 +534,7 @@ export function useAllMintedPlots(): AllMintedData {
     cfg.deployBlock,
     publicClient,
     refreshNonce,
+    liveTick,
   ]);
 
   return data;

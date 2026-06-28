@@ -11,6 +11,7 @@ import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { plotIdFromXY, shortAddress, xyFromPlotId } from "@/lib/coords";
+import { useBaseName } from "@/hooks/useBaseName";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   MAX_UPLOAD_BYTES,
@@ -151,6 +152,7 @@ export function ProfileDrawer() {
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
   const { address, isConnected } = useAccount();
+  const baseName = useBaseName(address);
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
   const { ids, isLoading } = usePlotsByOwner(address);
@@ -247,7 +249,7 @@ export function ProfileDrawer() {
               <h2 className="text-xl font-black text-base-blue">My Profile</h2>
               {isConnected && (
                 <p className="font-mono text-xs text-slate-500">
-                  {shortAddress(address)}
+                  {baseName ?? shortAddress(address)}
                 </p>
               )}
             </div>

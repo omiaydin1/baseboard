@@ -9,7 +9,7 @@ import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { type LeaderEntry } from "@/hooks/useBaseBoard";
 import { useAllMintedContext } from "@/hooks/useAllMintedContext";
 import { useBaseName } from "@/hooks/useBaseName";
-import { shortAddressLong } from "@/lib/coords";
+import { shortAddress } from "@/lib/coords";
 
 const PAGE_SIZE = 10;
 
@@ -48,9 +48,7 @@ function RankBadge({ rank }: { rank: number }) {
 /** One leaderboard row — resolves the owner's Basename, falls back to 6+6 address. */
 function LeaderRow({ entry, isMe }: { entry: LeaderEntry; isMe: boolean }) {
   const baseName = useBaseName(entry.owner);
-  const display = baseName
-    ? shortAddressLong(baseName)
-    : shortAddressLong(entry.owner);
+  const display = baseName ? shortAddress(baseName) : shortAddress(entry.owner);
 
   return (
     <li
@@ -102,6 +100,11 @@ export function LeaderboardDrawer() {
 
   const pageRows = ranking.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 
+  // Only pin a separate "Your rank" card when the connected wallet isn't already
+  // visible on the current page — otherwise it duplicates the highlighted row.
+  const myEntryVisible =
+    !!me && pageRows.some((e) => e.owner.toLowerCase() === me);
+
   return (
     <Drawer
       open={open}
@@ -125,8 +128,8 @@ export function LeaderboardDrawer() {
         </div>
       ) : (
         <div className="space-y-3">
-          {/* Your standing, even when it's off the current page. */}
-          {myEntry && (
+          {/* Your standing, only when it's off the current page. */}
+          {myEntry && !myEntryVisible && (
             <div className="rounded-xl bg-slate-50 p-2">
               <p className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                 Your rank

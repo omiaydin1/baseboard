@@ -14,10 +14,10 @@ export const TOTAL_PLOTS = GRID_SIZE * GRID_SIZE; // 9,998,244
 export const DISPLAY_MAX_PLOTS = TOTAL_PLOTS; // 9,998,244
 
 /**
- * Hardcoded dashboard stats. These are intentionally NOT wired to live on-chain
- * reads in this task — they are fixed display constants (a live on-chain count
- * is planned for a future task). `totalPlotsSold` on the contract still reflects
- * real ownership; these constants only drive the dashboard's headline numbers.
+ * Dashboard fallback stats. The dashboard now reads the LIVE on-chain count
+ * (`totalPlotsSold` via `useBoardStats`); these constants are only used as the
+ * initial placeholder until that first read lands, so the headline never
+ * flashes "0". Kept in sync with the last known on-chain count.
  *   Total Pixels Sold : 158
  *   Remaining Available: 9,998,086  (= 9,998,244 − 158)
  *   Sold %            : 0.0016%     (= 158 / 9,998,244 × 100, 4 dp)
