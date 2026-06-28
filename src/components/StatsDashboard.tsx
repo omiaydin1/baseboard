@@ -6,6 +6,7 @@ import {
   SOLD_PCT_DISPLAY,
 } from "@/lib/constants";
 import { SoldOutStamp } from "./SoldOutStamp";
+import { ActivityTicker } from "./ActivityTicker";
 
 function StatCard({
   label,
@@ -16,9 +17,12 @@ function StatCard({
   value: string;
   accent?: boolean;
 }) {
+  // Stat boxes were compacted proportionally (same shrink applied to all three)
+  // to free header space for the new "Leaderboard" entry — only box width and
+  // padding shrink; the number text stays at a legible size.
   return (
     <div
-      className={`flex min-w-[110px] flex-1 flex-col rounded-xl border-2 px-3 py-1.5 sm:min-w-[150px] sm:px-4 sm:py-2 ${
+      className={`flex min-w-[88px] flex-1 flex-col rounded-xl border-2 px-2.5 py-1.5 sm:min-w-[118px] sm:px-3 sm:py-2 ${
         accent
           ? "border-base-blue bg-blue-50"
           : "border-blue-100 bg-white"
@@ -61,12 +65,15 @@ export function StatsDashboard() {
             value={remaining.toLocaleString()}
           />
           <StatCard label="Sold %" value={`${pct}%`} />
-          <div className="flex items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2">
             <span className="relative flex h-2.5 w-2.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
             </span>
-            <span className="text-xs font-semibold text-green-700">Live</span>
+            <span className="shrink-0 text-xs font-semibold text-green-700">
+              Live
+            </span>
+            <ActivityTicker />
           </div>
         </div>
         {soldOut && <SoldOutStamp />}
