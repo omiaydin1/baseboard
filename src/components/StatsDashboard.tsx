@@ -1,10 +1,7 @@
 "use client";
 
-import {
-  PIXELS_REMAINING_DISPLAY,
-  PIXELS_SOLD_DISPLAY,
-  SOLD_PCT_DISPLAY,
-} from "@/lib/constants";
+import { DISPLAY_MAX_PLOTS, PIXELS_SOLD_DISPLAY } from "@/lib/constants";
+import { useBoardStats } from "@/hooks/useBaseBoard";
 import { SoldOutStamp } from "./SoldOutStamp";
 import { ActivityTicker } from "./ActivityTicker";
 import { AnimatedNumber } from "./AnimatedNumber";
@@ -41,16 +38,22 @@ function StatCard({
 }
 
 /**
- * Dashboard headline stats. Values are fixed display constants for now (see
- * `constants.ts`) — Total Pixels Sold / Remaining Available / Sold %. A red
- * "SOLD OUT" stamp overlays the stats once `remaining` hits 0 (won't trigger
- * while the count is hardcoded above zero, but is wired so it activates
- * automatically when live tracking is added later).
+ * Dashboard headline stats. "Total Pixels Sold" now reflects the LIVE on-chain
+ * count (`totalPlotsSold`, polled + refreshed on every `PlotsPurchased`) via
+ * `useBoardStats`, with Remaining and Sold % derived from it. A red "SOLD OUT"
+ * stamp overlays the stats once `remaining` hits 0.
+ *
+ * The "Live" indicator is intentionally slim and integrated into the full-width
+ * horizontal bar beneath the stat cards (next to the progress fill + activity
+ * ticker) rather than being a bulky bordered box in the cards row.
  */
 export function StatsDashboard() {
-  const sold = PIXELS_SOLD_DISPLAY;
-  const remaining = PIXELS_REMAINING_DISPLAY;
-  const pct = SOLD_PCT_DISPLAY;
+  const { sold: liveSold, isLoading } = useBoardStats();
+  // Until the first live read lands, fall back to the known display count so the
+  // headline never flashes "0" / "0.0000%".
+  const sold = isLoading && liveSold === 0 ? PIXELS_SOLD_DISPLAY : liveSold;
+  const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
+  const pct = ((sold / DISPLAY_MAX_PLOTS) * 100).toFixed(4);
   const soldOut = remaining === 0;
 
   return (
@@ -67,24 +70,26 @@ export function StatsDashboard() {
             value={remaining.toLocaleString()}
           />
           <StatCard label="Sold %" value={`${pct}%`} />
-          <div className="flex min-w-0 items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2">
-            <span className="relative flex h-2.5 w-2.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
-            </span>
-            <span className="shrink-0 text-xs font-semibold text-green-700">
-              Live
-            </span>
-            <ActivityTicker />
-          </div>
         </div>
         {soldOut && <SoldOutStamp />}
       </div>
-      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
-        <div
-          className="h-full rounded-full bg-base-blue transition-all"
-          style={{ width: `${Math.min(100, Number(pct))}%` }}
-        />
+
+      {/* Slim live strip integrated into the long horizontal bar. */}
+      <div className="mt-1.5 flex items-center gap-2.5">
+        <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-green-600">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+          </span>
+          Live
+        </span>
+        <ActivityTicker />
+        <div className="ml-auto h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-blue-100 sm:w-40">
+          <div
+            className="h-full rounded-full bg-base-blue transition-all"
+            style={{ width: `${Math.min(100, Math.max(2, Number(pct)))}%` }}
+          />
+        </div>
       </div>
     </div>
   );

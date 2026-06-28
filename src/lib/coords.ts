@@ -63,20 +63,18 @@ export function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
-/** Shorten an address for display: 0x1234…abcd. */
-export function shortAddress(addr?: string | null): string {
-  if (!addr) return "—";
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
-
 /**
- * Privacy-display address truncation showing the first 6 and last 6 characters
- * with the middle hidden, e.g. `0x71aa…6f812b`. Used by the leaderboard rows and
- * the activity ticker (a longer tail than `shortAddress`'s 6+4). A resolved
- * Basename is middle-truncated the same way when it's too long to show in full.
+ * Single canonical identity truncation used EVERYWHERE a wallet address (or a
+ * too-long Basename) is shown — header, profile, leaderboard, ticker, plot
+ * modal — so the shortened form is uniform across the whole app: first 6 +
+ * last 6 with the middle hidden, e.g. `0x71aa…6f812b`. Short values (≤14 chars,
+ * e.g. a compact Basename) are returned in full.
  */
-export function shortAddressLong(value?: string | null): string {
+export function shortAddress(value?: string | null): string {
   if (!value) return "—";
   if (value.length <= 14) return value;
   return `${value.slice(0, 6)}…${value.slice(-6)}`;
 }
+
+/** @deprecated Use `shortAddress`; kept as an alias for the unified 6+6 rule. */
+export const shortAddressLong = shortAddress;

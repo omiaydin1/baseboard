@@ -21,6 +21,15 @@ interface BoardUIState {
   setLeaderboardOpen: (open: boolean) => void;
   toggleLeaderboard: () => void;
 
+  /**
+   * Whether the purchase-density (heatmap) overlay is shown. When false the
+   * overlay is fully disabled: the canvas skips both baking the density field
+   * and drawing it, so there is zero density-related work in the render path.
+   */
+  densityEnabled: boolean;
+  setDensityEnabled: (on: boolean) => void;
+  toggleDensity: () => void;
+
   /** Currently inspected existing plot (opens the plot detail modal). */
   activePlotId: number | null;
   openPlot: (id: number) => void;
@@ -81,6 +90,10 @@ export const useBoardStore = create<BoardUIState>((set) => ({
     set({ leaderboardOpen: open, profileOpen: false }),
   toggleLeaderboard: () =>
     set((s) => ({ leaderboardOpen: !s.leaderboardOpen, profileOpen: false })),
+
+  densityEnabled: true,
+  setDensityEnabled: (on) => set({ densityEnabled: on }),
+  toggleDensity: () => set((s) => ({ densityEnabled: !s.densityEnabled })),
 
   activePlotId: null,
   openPlot: (id) =>

@@ -287,7 +287,7 @@ export function BaseBoardCanvas() {
     // coarse baked field is stretched across the board with bilinear smoothing
     // for a soft gradient; its capped alpha keeps the underlying pixels visible.
     const densityField = densityCanvasRef.current;
-    if (densityField && densityField.width > 0) {
+    if (densityEnabledRef.current && densityField && densityField.width > 0) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(boardLeft, boardTop, boardSize, boardSize);
@@ -797,6 +797,12 @@ export function BaseBoardCanvas() {
   const latestBlockRef = useRef<number>(0);
   const densityCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Heatmap on/off. Mirrored into a ref so the render loop reads it without
+  // re-creating `renderBoard`. When off we neither bake nor draw the field.
+  // (The on/off sync effect lives just after `bakeDensity` is defined below.)
+  const densityEnabled = useBoardStore((s) => s.densityEnabled);
+  const densityEnabledRef = useRef(densityEnabled);
+
   // Rebuild the baked density field from the current owned plots. Each owned
   // plot contributes to its coarse bucket; recent purchases (within
   // DENSITY_RECENT_WINDOW_BLOCKS of the latest block) are counted when there is
@@ -849,6 +855,13 @@ export function BaseBoardCanvas() {
     }
     octx.putImageData(img, 0, 0);
   }, []);
+
+  // Keep the render-loop ref in sync with the toggle and bake on first enable.
+  useEffect(() => {
+    densityEnabledRef.current = densityEnabled;
+    if (densityEnabled && !densityCanvasRef.current) bakeDensity();
+    dirtyRef.current = true;
+  }, [densityEnabled, bakeDensity]);
 
   const loadAllMinted = useCallback(async () => {
     if (!cfg.isConfigured || !publicClient) return;
@@ -920,7 +933,9 @@ export function BaseBoardCanvas() {
           /* keep prior data for this chunk */
         }
       }
-      bakeDensity();
+      // Skip the bake entirely when the overlay is off — no density work runs
+      // until the user enables it (the toggle's effect bakes on demand).
+      if (densityEnabledRef.current) bakeDensity();
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     } catch {
@@ -1482,8 +1497,9 @@ export function BaseBoardCanvas() {
         </div>
       </div>
 
-      {/* Coordinate / zoom readout */}
-      <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-base-blue/90 px-3 py-1.5 text-xs font-semibold text-white shadow">
+      {/* Coordinate / zoom readout (hidden on mobile so the centered density
+          controls own the bottom of the board there) */}
+      <div className="pointer-events-none absolute bottom-3 left-3 hidden rounded-lg bg-base-blue/90 px-3 py-1.5 text-xs font-semibold text-white shadow sm:block">
         {hoverInfo ? `X: ${hoverInfo.x} · Y: ${hoverInfo.y}` : "Hover the board"}
         <span className="ml-2 opacity-80">· {zoomLabel.toFixed(1)} px/cell</span>
       </div>
