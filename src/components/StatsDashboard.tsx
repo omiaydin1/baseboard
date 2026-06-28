@@ -7,6 +7,7 @@ import {
 } from "@/lib/constants";
 import { SoldOutStamp } from "./SoldOutStamp";
 import { ActivityTicker } from "./ActivityTicker";
+import { AnimatedNumber } from "./AnimatedNumber";
 
 function StatCard({
   label,
@@ -31,9 +32,10 @@ function StatCard({
       <span className="text-[11px] font-semibold uppercase tracking-wider text-base-light">
         {label}
       </span>
-      <span className="text-lg font-black tabular-nums text-base-blue sm:text-xl md:text-2xl">
-        {value}
-      </span>
+      <AnimatedNumber
+        value={value}
+        className="text-lg font-black text-base-blue sm:text-xl md:text-2xl"
+      />
     </div>
   );
 }

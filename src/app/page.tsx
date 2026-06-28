@@ -12,6 +12,7 @@ import { NetworkSelector } from "@/components/NetworkSelector";
 import { PlotModal } from "@/components/PlotModal";
 import { BuyModal } from "@/components/BuyModal";
 import { Legend } from "@/components/Legend";
+import { DensityLegend } from "@/components/DensityLegend";
 import { Toaster } from "@/components/Toaster";
 import { PendingTxRecovery } from "@/components/PendingTxRecovery";
 import { AllMintedProvider } from "@/hooks/useAllMintedContext";
@@ -97,8 +98,11 @@ export default function Home() {
           <BaseBoardCanvas />
         </div>
 
-        <div className="my-2 flex w-full max-w-7xl items-center justify-between">
-          <Legend />
+        <div className="my-2 flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <Legend />
+            <DensityLegend />
+          </div>
           <div className="flex items-center gap-3 text-xs text-slate-400">
             <p>
               BaseBoard · 3162 × 3162 grid · {cfg.name} ({cfg.chainId})

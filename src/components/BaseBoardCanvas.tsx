@@ -13,6 +13,13 @@ import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { clamp, plotIdFromXY, xyFromPlotId } from "@/lib/coords";
 import { parseZone, stripZone } from "@/lib/image";
+import {
+  DENSITY_ALPHA_CAP,
+  DENSITY_BUCKETS,
+  DENSITY_RECENT_MIN,
+  DENSITY_RECENT_WINDOW_BLOCKS,
+  DENSITY_RGB,
+} from "@/lib/density";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 
@@ -273,6 +280,25 @@ export function BaseBoardCanvas() {
     ctx.clip();
     drawPlots(ctx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
     ctx.restore();
+
+    // ---- Purchase-density overlay (Part 10.2) ----
+    // Additive translucent blue layer on top of the pixel fills, strictly
+    // clipped to the board rect so it can never bleed outside the frame. The
+    // coarse baked field is stretched across the board with bilinear smoothing
+    // for a soft gradient; its capped alpha keeps the underlying pixels visible.
+    const densityField = densityCanvasRef.current;
+    if (densityField && densityField.width > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(boardLeft, boardTop, boardSize, boardSize);
+      ctx.clip();
+      const prevSmoothing = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(densityField, boardLeft, boardTop, boardSize, boardSize);
+      ctx.imageSmoothingEnabled = prevSmoothing;
+      ctx.restore();
+    }
 
     // ---- Solid Base-blue outline marking the active grid boundary ----
     // Always visible so the playable map is clearly separated from the white
@@ -763,6 +789,67 @@ export function BaseBoardCanvas() {
   const lastScanBlockRef = useRef<number>(0);
   const globalLoadingRef = useRef(false);
 
+  // ---- Purchase-density overlay state (Part 10.2) ----
+  // Block at which each plot was last seen purchased (drives the recency
+  // window), the latest scanned block, and a low-res baked density field that
+  // renderBoard stretches over the board as a soft additive blue tint.
+  const purchaseBlockRef = useRef<Map<number, number>>(new Map());
+  const latestBlockRef = useRef<number>(0);
+  const densityCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Rebuild the baked density field from the current owned plots. Each owned
+  // plot contributes to its coarse bucket; recent purchases (within
+  // DENSITY_RECENT_WINDOW_BLOCKS of the latest block) are counted when there is
+  // enough recent activity, otherwise we fall back to the all-time field. The
+  // BUCKETS×BUCKETS field is normalized and written as per-pixel blue alpha so a
+  // single smooth-scaled drawImage produces the gradient (never recolouring the
+  // pixels themselves — this is a translucent layer on top).
+  const bakeDensity = useCallback(() => {
+    const map = plotMapRef.current;
+    const B = DENSITY_BUCKETS;
+    const recentThreshold = latestBlockRef.current - DENSITY_RECENT_WINDOW_BLOCKS;
+    const recent = new Float32Array(B * B);
+    const allTime = new Float32Array(B * B);
+    let recentCount = 0;
+    map.forEach((_plot, id) => {
+      const { x, y } = xyFromPlotId(id);
+      const bx = Math.min(B - 1, Math.floor((x / GRID_SIZE) * B));
+      const by = Math.min(B - 1, Math.floor((y / GRID_SIZE) * B));
+      const idx = by * B + bx;
+      allTime[idx] += 1;
+      const blk = purchaseBlockRef.current.get(id) ?? 0;
+      if (blk >= recentThreshold) {
+        recent[idx] += 1;
+        recentCount += 1;
+      }
+    });
+    const field = recentCount >= DENSITY_RECENT_MIN ? recent : allTime;
+    let max = 0;
+    for (let i = 0; i < field.length; i++) if (field[i] > max) max = field[i];
+
+    let off = densityCanvasRef.current;
+    if (!off) {
+      off = document.createElement("canvas");
+      densityCanvasRef.current = off;
+    }
+    off.width = B;
+    off.height = B;
+    const octx = off.getContext("2d");
+    if (!octx) return;
+    octx.clearRect(0, 0, B, B);
+    if (max <= 0) return;
+    const img = octx.createImageData(B, B);
+    for (let i = 0; i < field.length; i++) {
+      // Gamma softens the falloff so mid-density regions remain visible.
+      const level = Math.pow(field[i] / max, 0.6);
+      img.data[i * 4] = DENSITY_RGB.r;
+      img.data[i * 4 + 1] = DENSITY_RGB.g;
+      img.data[i * 4 + 2] = DENSITY_RGB.b;
+      img.data[i * 4 + 3] = Math.round(level * DENSITY_ALPHA_CAP * 255);
+    }
+    octx.putImageData(img, 0, 0);
+  }, []);
+
   const loadAllMinted = useCallback(async () => {
     if (!cfg.isConfigured || !publicClient) return;
     if (globalLoadingRef.current) return;
@@ -790,14 +877,20 @@ export function BaseBoardCanvas() {
             toBlock: BigInt(end),
           });
           logs.forEach((log) => {
+            const blk = Number(log.blockNumber ?? 0n);
             const args = log.args as { plotIds?: readonly bigint[] };
-            args.plotIds?.forEach((b) => allMintedIdsRef.current.add(Number(b)));
+            args.plotIds?.forEach((b) => {
+              const id = Number(b);
+              allMintedIdsRef.current.add(id);
+              purchaseBlockRef.current.set(id, blk);
+            });
           });
         } catch {
           /* range rejected by RPC — skip this window, keep going */
         }
       }
       lastScanBlockRef.current = latest;
+      latestBlockRef.current = latest;
 
       // 2) Refresh current state for every known plot id (chunked reads).
       const all = Array.from(allMintedIdsRef.current);
@@ -827,6 +920,7 @@ export function BaseBoardCanvas() {
           /* keep prior data for this chunk */
         }
       }
+      bakeDensity();
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     } catch {
@@ -834,7 +928,7 @@ export function BaseBoardCanvas() {
     } finally {
       globalLoadingRef.current = false;
     }
-  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock]);
+  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity]);
 
   // State isolation: when the active chain changes, wipe every
   // cached plot, the minted-id set, the log-scan cursor, decoded images and any
@@ -848,6 +942,9 @@ export function BaseBoardCanvas() {
     plotMapRef.current.clear();
     allMintedIdsRef.current.clear();
     lastScanBlockRef.current = 0;
+    purchaseBlockRef.current.clear();
+    latestBlockRef.current = 0;
+    densityCanvasRef.current = null;
     imageCacheRef.current.clear();
     lodCacheRef.current.clear();
     clearOptimisticPlots();
