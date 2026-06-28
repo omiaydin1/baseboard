@@ -188,8 +188,9 @@ async function decodeDownsampled(file: File): Promise<DecodedImage> {
 /**
  * Re-encode `src` into a data URI whose longest side is at most `maxDim`,
  * always preserving the source's own aspect ratio (no cropping). Placement into
- * a multi-plot zone is handled at render time via contain-fit (letterbox), so
- * the bytes we store keep the whole picture instead of a cover-cropped slice.
+ * a multi-plot zone is handled at render time by stretching (object-fit: fill)
+ * the stored picture to exactly fill the zone, so the bytes we store keep the
+ * whole picture instead of a cover-cropped slice.
  */
 function encode(
   src: DecodedImage,
