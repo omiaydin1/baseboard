@@ -21,7 +21,7 @@ import {
 import { useActiveChainConfig } from "./useActiveContract";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
-import { parseLink, parseZone } from "@/lib/image";
+import { resolveCoveringImage } from "@/lib/image";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -186,22 +186,12 @@ export function useCoveringImage(
 
   const plots = (batch.data as readonly Plot[] | undefined) ?? [];
 
-  let imageUri: string | null = null;
-  let link: string | null = null;
-  if (canRun && x != null && y != null) {
-    for (const p of plots) {
-      if (!p?.imageUri) continue;
-      const z = parseZone(p.imageUri);
-      if (!z) continue;
-      if (x >= z.x1 && x <= z.x2 && y >= z.y1 && y <= z.y2) {
-        imageUri = p.imageUri;
-        link = parseLink(p.imageUri);
-        break;
-      }
-    }
-  }
+  const covering =
+    canRun && x != null && y != null
+      ? resolveCoveringImage(plots, x, y)
+      : null;
 
-  return { imageUri, link };
+  return { imageUri: covering?.imageUri ?? null, link: covering?.link ?? null };
 }
 
 export function useBaseBoardWrite() {
