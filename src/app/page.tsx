@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { BaseBoardCanvas } from "@/components/BaseBoardCanvas";
 import { HangingHeader } from "@/components/HangingHeader";
 import { StatsDashboard } from "@/components/StatsDashboard";
@@ -52,9 +53,20 @@ export default function Home() {
 
         <div className="my-2 flex w-full max-w-7xl items-center justify-between">
           <Legend />
-          <p className="text-xs text-slate-400">
-            BaseBoard · 3162 × 3162 grid · {cfg.name} ({cfg.chainId})
-          </p>
+          <div className="flex items-center gap-3 text-xs text-slate-400">
+            <p>
+              BaseBoard · 3162 × 3162 grid · {cfg.name} ({cfg.chainId})
+            </p>
+            <nav className="flex items-center gap-2">
+              <Link href="/privacy" className="hover:text-base-blue">
+                Privacy
+              </Link>
+              <span aria-hidden="true">·</span>
+              <Link href="/terms" className="hover:text-base-blue">
+                Terms
+              </Link>
+            </nav>
+          </div>
         </div>
       </main>
 
