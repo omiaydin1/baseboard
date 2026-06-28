@@ -8,7 +8,7 @@ import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
-import { baseBoardAbi } from "@/lib/contract";
+import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { plotIdFromXY, shortAddress, xyFromPlotId } from "@/lib/coords";
 import {
@@ -129,12 +129,14 @@ async function preflightImageUpdate(
     return "Image is too large to store on-chain — try a simpler one";
   if (!publicClient) return null;
   try {
-    const plot = (await publicClient.readContract({
-      address: contract,
-      abi: baseBoardAbi,
-      functionName: "getPlot",
-      args: [BigInt(plotId)],
-    })) as Plot | undefined;
+    const plot = (await readContractWithTimeout(
+      publicClient.readContract({
+        address: contract,
+        abi: baseBoardAbi,
+        functionName: "getPlot",
+        args: [BigInt(plotId)],
+      }),
+    )) as Plot | undefined;
     if (!plot || plot.owner.toLowerCase() !== account.toLowerCase())
       return "You no longer own this pixel — refresh your profile and try again";
 
@@ -184,12 +186,14 @@ export function ProfileDrawer() {
     let cancelled = false;
     (async () => {
       try {
-        const result = (await publicClient.readContract({
-          address: cfg.contract,
-          abi: baseBoardAbi,
-          functionName: "getPlotsBatch",
-          args: [ids.map((i) => BigInt(i))],
-        })) as readonly Plot[];
+        const result = (await readContractWithTimeout(
+          publicClient.readContract({
+            address: cfg.contract,
+            abi: baseBoardAbi,
+            functionName: "getPlotsBatch",
+            args: [ids.map((i) => BigInt(i))],
+          }),
+        )) as readonly Plot[];
         if (cancelled) return;
         const map: Record<number, Plot> = {};
         result.forEach((p, i) => {

@@ -275,3 +275,24 @@ export const baseBoardAbi = [
     ],
   },
 ] as const;
+
+/**
+ * Race a `publicClient.readContract` (or any read promise) against a timeout so
+ * a stuck RPC can't hang the UI indefinitely. Matters on BaseApp's mobile
+ * network conditions (wifi↔cellular handoff) where an unbounded call would
+ * otherwise spin with no feedback. Rejects with a clear, catchable error on
+ * timeout; the underlying request is left to settle/garbage-collect on its own.
+ */
+export function readContractWithTimeout<T>(
+  read: Promise<T>,
+  timeoutMs = 12_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`RPC read timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  return Promise.race([read, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}

@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { usePublicClient, useAccount, useChainId } from "wagmi";
-import { baseBoardAbi } from "@/lib/contract";
+import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { clamp, plotIdFromXY, xyFromPlotId } from "@/lib/coords";
@@ -720,12 +720,14 @@ export function BaseBoardCanvas() {
     if (ids.length === 0) return;
 
     try {
-      const result = (await publicClient.readContract({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "getPlotsBatch",
-        args: [ids],
-      })) as readonly Plot[];
+      const result = (await readContractWithTimeout(
+        publicClient.readContract({
+          address: cfg.contract,
+          abi: baseBoardAbi,
+          functionName: "getPlotsBatch",
+          args: [ids],
+        }),
+      )) as readonly Plot[];
 
       const map = plotMapRef.current;
       result.forEach((plot, i) => {
@@ -804,12 +806,14 @@ export function BaseBoardCanvas() {
       for (let i = 0; i < all.length; i += READ_CHUNK) {
         const slice = all.slice(i, i + READ_CHUNK);
         try {
-          const res = (await publicClient.readContract({
-            address: cfg.contract,
-            abi: baseBoardAbi,
-            functionName: "getPlotsBatch",
-            args: [slice.map((n) => BigInt(n))],
-          })) as readonly Plot[];
+          const res = (await readContractWithTimeout(
+            publicClient.readContract({
+              address: cfg.contract,
+              abi: baseBoardAbi,
+              functionName: "getPlotsBatch",
+              args: [slice.map((n) => BigInt(n))],
+            }),
+          )) as readonly Plot[];
           res.forEach((plot, j) => {
             const id = slice[j];
             if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);

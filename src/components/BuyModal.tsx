@@ -8,7 +8,7 @@ import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
-import { baseBoardAbi } from "@/lib/contract";
+import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { ZERO_ADDRESS } from "@/lib/constants";
 import {
   bboxToPlotIds,
@@ -73,12 +73,14 @@ export function BuyModal() {
     setChecking(true);
     (async () => {
       try {
-        const result = (await publicClient.readContract({
-          address: cfg.contract,
-          abi: baseBoardAbi,
-          functionName: "getPlotsBatch",
-          args: [ids.map((i) => BigInt(i))],
-        })) as readonly Plot[];
+        const result = (await readContractWithTimeout(
+          publicClient.readContract({
+            address: cfg.contract,
+            abi: baseBoardAbi,
+            functionName: "getPlotsBatch",
+            args: [ids.map((i) => BigInt(i))],
+          }),
+        )) as readonly Plot[];
         if (cancelled) return;
         const free = ids.filter(
           (_, i) => result[i].owner.toLowerCase() === ZERO_ADDRESS,
