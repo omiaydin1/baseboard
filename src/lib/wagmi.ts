@@ -136,7 +136,7 @@ export function getWagmiConfig() {
             metadata: {
               name: "BaseBoard",
               description:
-                "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+                "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.",
               url: APP_URL,
               icons: [APP_LOGO_URL],
             },

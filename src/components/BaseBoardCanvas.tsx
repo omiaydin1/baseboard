@@ -1304,7 +1304,7 @@ export function BaseBoardCanvas() {
           <button
             type="button"
             onClick={toggleSelectMode}
-            title="Tap plots one-by-one to add them to a buy basket"
+            title="Tap pixels one-by-one to add them to a buy basket"
             className={`border-l-2 border-base-blue px-3 py-1.5 text-sm font-semibold ${
               selectMode ? "bg-base-blue text-white" : "text-base-blue"
             }`}

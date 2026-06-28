@@ -101,9 +101,9 @@ function friendlyTxError(e: unknown): string {
   if (/insufficient funds|insufficient resources|exceeds the balance/i.test(msg))
     return "Insufficient ETH to cover gas for this transaction";
   if (/not plot owner/i.test(msg))
-    return "You don't own this plot anymore — refresh your profile";
+    return "You don't own this pixel anymore — refresh your profile";
   if (/estimate gas|reverted|execution reverted|user ?operation/i.test(msg))
-    return "The wallet couldn't run this transaction — your image may be too large or you no longer own this plot";
+    return "The wallet couldn't run this transaction — your image may be too large or you no longer own this pixel";
   return msg.slice(0, 140);
 }
 
@@ -136,7 +136,7 @@ async function preflightImageUpdate(
       args: [BigInt(plotId)],
     })) as Plot | undefined;
     if (!plot || plot.owner.toLowerCase() !== account.toLowerCase())
-      return "You no longer own this plot — refresh your profile and try again";
+      return "You no longer own this pixel — refresh your profile and try again";
 
     return null;
   } catch (e) {
@@ -269,29 +269,29 @@ export function ProfileDrawer() {
           {!isConnected ? (
             <div className="mt-10 flex flex-col items-center gap-3 text-center">
               <p className="text-sm text-slate-500">
-                Connect your wallet to view and manage your plots.
+                Connect your wallet to view and manage your pixels.
               </p>
               <WalletConnect />
             </div>
           ) : !cfg.isConfigured ? (
             <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700">
               No BaseBoard contract is configured on {cfg.name}. Deploy
-              BaseBoard.sol on this network to manage your plots here.
+              BaseBoard.sol on this network to manage your pixels here.
             </p>
           ) : isLoading ? (
             <div className="flex items-center gap-2 text-sm text-slate-500">
-              <Spinner size={16} /> Loading your plots…
+              <Spinner size={16} /> Loading your pixels…
             </div>
           ) : ids.length === 0 ? (
             <div className="mt-10 text-center text-sm text-slate-500">
-              You don&apos;t own any plots yet. Close this panel and buy some on
+              You don&apos;t own any pixels yet. Close this panel and buy some on
               the board!
             </div>
           ) : (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-600">
-                  {ids.length} plot{ids.length === 1 ? "" : "s"} owned
+                  {ids.length} pixel{ids.length === 1 ? "" : "s"} owned
                 </p>
                 {ids.length > 1 && (
                   <button
@@ -306,14 +306,14 @@ export function ProfileDrawer() {
                         : "border-2 border-base-blue text-base-blue hover:bg-blue-50"
                     }`}
                   >
-                    {multiMode ? "Done" : "＋ One image, many plots"}
+                    {multiMode ? "Done" : "＋ One image, many pixels"}
                   </button>
                 )}
               </div>
 
               {multiMode && (
                 <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-base-blue">
-                  Tap the plots you want to cover, then upload a single image —
+                  Tap the pixels you want to cover, then upload a single image —
                   it spans the whole selection in one transaction. Use a batch
                   master checkbox to select a whole purchase block at once.
                 </p>
@@ -343,7 +343,7 @@ export function ProfileDrawer() {
                             onChange={() => toggleCluster(cluster)}
                             className="h-4 w-4 accent-base-blue"
                           />
-                          Batch #{ci + 1} · {cluster.length} plot
+                          Batch #{ci + 1} · {cluster.length} pixel
                           {cluster.length === 1 ? "" : "s"}
                           {cluster.length > 1 ? " (adjacent)" : ""}
                         </label>
@@ -739,7 +739,7 @@ function MultiImagePanel({
         applyOptimisticPlots(pendingOverrideRef.current);
         pendingOverrideRef.current = null;
       }
-      pushToast("success", `Image applied across ${selected.length} plots`);
+      pushToast("success", `Image applied across ${selected.length} pixels`);
       setPending(false);
       onDone();
     }
@@ -788,7 +788,7 @@ function MultiImagePanel({
   return (
     <div className="thin-scrollbar max-h-[55vh] shrink-0 touch-pan-y overflow-y-auto overscroll-contain border-t-2 border-blue-100 bg-white p-4 shadow-[0_-8px_20px_rgba(0,82,255,0.06)]">
       <p className="mb-2 text-sm font-bold text-base-blue">
-        {selected.length} plot{selected.length === 1 ? "" : "s"} selected ·{" "}
+        {selected.length} pixel{selected.length === 1 ? "" : "s"} selected ·{" "}
         {plotsW}×{plotsH} area
       </p>
       <ImageUploader

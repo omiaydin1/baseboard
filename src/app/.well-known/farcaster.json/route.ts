@@ -58,9 +58,9 @@ export function GET(req: Request) {
     frame: {
       version: "1",
       name: "BaseBoard",
-      subtitle: "10,000,000 plots on Base",
+      subtitle: "9,998,244 pixels on Base",
       description:
-        "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+        "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.",
       iconUrl: `${url}/icon.png${ICON_CACHE_BUST}`,
       homeUrl: url,
       imageUrl: `${url}/og.png`,

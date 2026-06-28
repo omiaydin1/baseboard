@@ -6,7 +6,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "BaseBoard",
     short_name: "BaseBoard",
     description:
-      "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+      "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.",
     start_url: "/",
     display: "standalone",
     background_color: "#ffffff",

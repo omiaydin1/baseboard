@@ -15,12 +15,27 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const SITE_TITLE = "BaseBoard · 9,998,244 pixels on Base";
+const SITE_DESCRIPTION =
+  "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.";
+
 export const metadata: Metadata = {
   metadataBase: new URL(APP_URL),
-  title: "BaseBoard · 10,000,000 plots on Base",
-  description:
-    "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
   manifest: "/manifest.webmanifest",
+  openGraph: {
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    url: APP_URL,
+    siteName: "BaseBoard",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
   // Icons are served via App Router file-based metadata
   // (app/favicon.ico, app/icon.png, app/apple-icon.png) — no manual `icons`
   // array so the auto-detected files are the single source of truth.
