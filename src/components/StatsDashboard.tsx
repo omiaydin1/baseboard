@@ -84,12 +84,6 @@ export function StatsDashboard() {
           Live
         </span>
         <ActivityTicker />
-        <div className="ml-auto h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-blue-100 sm:w-40">
-          <div
-            className="h-full rounded-full bg-base-blue transition-all"
-            style={{ width: `${Math.min(100, Math.max(2, Number(pct)))}%` }}
-          />
-        </div>
       </div>
     </div>
   );

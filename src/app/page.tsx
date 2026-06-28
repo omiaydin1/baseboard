@@ -96,7 +96,10 @@ export default function Home() {
           {/* inner shadow ring to enhance the "framed canvas" depth */}
           <div className="pointer-events-none absolute inset-0 z-10 rounded-[10px] shadow-[inset_0_0_20px_rgba(0,82,255,0.12)] sm:rounded-[16px] sm:shadow-[inset_0_0_30px_rgba(0,82,255,0.12)]" />
           <BaseBoardCanvas />
-          {/* Heatmap toggle + activity ruler, centered on the canvas bottom. */}
+        </div>
+
+        {/* Heatmap toggle + activity ruler, centered below the board frame. */}
+        <div className="mt-2 flex w-full max-w-7xl justify-center">
           <DensityControls />
         </div>
 
