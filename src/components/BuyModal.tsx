@@ -31,7 +31,8 @@ export function BuyModal() {
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
-  const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
+  const { writeContractAsync, setPendingTxLabel, status, error, reset } =
+    useBaseBoardWrite();
 
   const [buyableIds, setBuyableIds] = useState<number[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -100,6 +101,7 @@ export function BuyModal() {
   const onBuy = async () => {
     if (!buyableIds || buyableIds.length === 0) return;
     setTxError(null);
+    setPendingTxLabel("Purchase");
     try {
       await writeContractAsync({
         address: cfg.contract,

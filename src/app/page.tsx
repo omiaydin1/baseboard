@@ -11,6 +11,7 @@ import { PlotModal } from "@/components/PlotModal";
 import { BuyModal } from "@/components/BuyModal";
 import { Legend } from "@/components/Legend";
 import { Toaster } from "@/components/Toaster";
+import { PendingTxRecovery } from "@/components/PendingTxRecovery";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 
@@ -75,6 +76,7 @@ export default function Home() {
       <PlotModal />
       <BuyModal />
       <Toaster />
+      <PendingTxRecovery />
     </div>
   );
 }

@@ -413,7 +413,8 @@ function OwnedPlotRow({
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
-  const { writeContractAsync, status, isSuccess, error } = useBaseBoardWrite();
+  const { writeContractAsync, setPendingTxLabel, status, isSuccess, error } =
+    useBaseBoardWrite();
 
   const [action, setAction] = useState<Action>("none");
   const [priceInput, setPriceInput] = useState("");
@@ -440,6 +441,7 @@ function OwnedPlotRow({
   const submit = async (label: string, fn: () => Promise<unknown>) => {
     setLocalError(null);
     setPendingLabel(label);
+    setPendingTxLabel(label);
     try {
       await fn();
       pushToast("info", `${label} submitted — waiting for confirmation…`);
@@ -712,7 +714,8 @@ function MultiImagePanel({
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
-  const { writeContractAsync, status, isSuccess } = useBaseBoardWrite();
+  const { writeContractAsync, setPendingTxLabel, status, isSuccess } =
+    useBaseBoardWrite();
   const [pending, setPending] = useState(false);
   const pendingOverrideRef = useRef<Record<number, Plot> | null>(null);
 
@@ -770,6 +773,7 @@ function MultiImagePanel({
       },
     };
     setPending(true);
+    setPendingTxLabel("Image update");
     try {
       await writeContractAsync({
         address: cfg.contract,

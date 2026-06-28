@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   useAccount,
   useChainId,
@@ -22,6 +22,7 @@ import { useActiveChainConfig } from "./useActiveContract";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 import { resolveCoveringImage } from "@/lib/image";
+import { clearPendingTx, savePendingTx } from "@/lib/pendingTx";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -211,9 +212,29 @@ export function useBaseBoardWrite() {
     hash,
   });
 
+  // Human label for the in-flight tx, persisted alongside the hash so a webview
+  // reload can recover and report the right outcome. Set via `setPendingTxLabel`.
+  const pendingLabelRef = useRef("Transaction");
+  const setPendingTxLabel = useCallback((label: string) => {
+    pendingLabelRef.current = label;
+  }, []);
+
+  // Persist the pending tx hash for cross-reload recovery (BaseApp webview).
   useEffect(() => {
-    if (isSuccess) bumpRefresh();
+    if (hash)
+      savePendingTx({ hash, chainId, label: pendingLabelRef.current });
+  }, [hash, chainId]);
+
+  useEffect(() => {
+    if (isSuccess) {
+      bumpRefresh();
+      clearPendingTx();
+    }
   }, [isSuccess, bumpRefresh]);
+
+  useEffect(() => {
+    if (error) clearPendingTx();
+  }, [error]);
 
   type WriteAsync = typeof writeContractAsync;
   const writeContractAsyncGuarded = useCallback<WriteAsync>(
@@ -297,6 +318,7 @@ export function useBaseBoardWrite() {
   return {
     writeContractAsync: writeContractAsyncGuarded,
     writeContract,
+    setPendingTxLabel,
     hash,
     status,
     isPending,
