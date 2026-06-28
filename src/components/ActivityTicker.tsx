@@ -51,7 +51,7 @@ function TickerLine({ event }: { event: PurchaseEvent }) {
     ? shortAddressLong(baseName)
     : shortAddressLong(event.buyer);
   return (
-    <span className="hidden min-w-0 items-center gap-1 truncate text-xs text-slate-500 sm:inline-flex">
+    <span className="inline-flex min-w-0 max-w-[180px] items-center gap-1 truncate border-l border-green-200 pl-2 text-xs text-slate-500 sm:max-w-[280px]">
       <span className="truncate font-mono font-semibold text-slate-600">
         {who}
       </span>
