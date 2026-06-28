@@ -136,7 +136,7 @@ export function getWagmiConfig() {
             metadata: {
               name: "BaseBoard",
               description:
-                "Buy, sell, trade and draw on a 10-million-plot pixel board on Base Mainnet.",
+                "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.",
               url: APP_URL,
               icons: [APP_LOGO_URL],
             },
@@ -163,7 +163,14 @@ export function getWagmiConfig() {
     ...shared,
     chains: [base],
     transports: {
-      [base.id]: http(),
+      // Bounded timeout + bounded retries so a slow/unreachable RPC fails fast
+      // instead of hanging indefinitely inside the BaseApp / Coinbase Wallet
+      // in-app webview (where there is no devtools to recover a stuck request).
+      [base.id]: http(undefined, {
+        timeout: 10_000,
+        retryCount: 2,
+        retryDelay: 800,
+      }),
     },
     // ERC-8021 attribution applied to the Base client.
     dataSuffix: {

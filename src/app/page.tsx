@@ -1,23 +1,61 @@
 "use client";
 
+import Link from "next/link";
 import { BaseBoardCanvas } from "@/components/BaseBoardCanvas";
 import { HangingHeader } from "@/components/HangingHeader";
 import { StatsDashboard } from "@/components/StatsDashboard";
 import { WalletConnect } from "@/components/WalletConnect";
 import { NetworkGuard } from "@/components/NetworkGuard";
 import { ProfileDrawer } from "@/components/ProfileDrawer";
+import { LeaderboardDrawer } from "@/components/LeaderboardDrawer";
+import { NetworkSelector } from "@/components/NetworkSelector";
 import { PlotModal } from "@/components/PlotModal";
 import { BuyModal } from "@/components/BuyModal";
 import { Legend } from "@/components/Legend";
+import { DensityLegend } from "@/components/DensityLegend";
 import { Toaster } from "@/components/Toaster";
+import { PendingTxRecovery } from "@/components/PendingTxRecovery";
+import { AllMintedProvider } from "@/hooks/useAllMintedContext";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 
+/** Person silhouette icon preceding "My Profile". */
+function ProfileIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM5 20a7 7 0 0 1 14 0"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Trophy icon preceding "Leaderboard", matching ProfileIcon's size/technique. */
+function TrophyIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M8 4h8v4a4 4 0 0 1-8 0V4Zm0 1H5a2 2 0 0 0 2 3m9-3h3a2 2 0 0 1-2 3M12 12v3m-3 4h6m-5 0 .5-4m4.5 4-.5-4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export default function Home() {
   const toggleProfile = useBoardStore((s) => s.toggleProfile);
+  const toggleLeaderboard = useBoardStore((s) => s.toggleLeaderboard);
   const cfg = useActiveChainConfig();
 
   return (
+    <AllMintedProvider>
     <div className="flex h-screen flex-col bg-white">
       <NetworkGuard />
 
@@ -27,14 +65,24 @@ export default function Home() {
           <div className="flex-1">
             <StatsDashboard />
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={toggleProfile}
-              className="rounded-xl border-2 border-base-blue px-4 py-2 text-sm font-semibold text-base-blue hover:bg-blue-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border-2 border-base-blue px-3 py-2 text-sm font-semibold text-base-blue hover:bg-blue-50 sm:px-4"
             >
+              <ProfileIcon />
               My Profile
             </button>
+            <button
+              type="button"
+              onClick={toggleLeaderboard}
+              className="inline-flex items-center gap-1.5 rounded-xl border-2 border-base-blue px-3 py-2 text-sm font-semibold text-base-blue hover:bg-blue-50 sm:px-4"
+            >
+              <TrophyIcon />
+              Leaderboard
+            </button>
+            <NetworkSelector />
             <WalletConnect />
           </div>
         </div>
@@ -50,19 +98,36 @@ export default function Home() {
           <BaseBoardCanvas />
         </div>
 
-        <div className="my-2 flex w-full max-w-7xl items-center justify-between">
-          <Legend />
-          <p className="text-xs text-slate-400">
-            BaseBoard · 3162 × 3162 grid · {cfg.name} ({cfg.chainId})
-          </p>
+        <div className="my-2 flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <Legend />
+            <DensityLegend />
+          </div>
+          <div className="flex items-center gap-3 text-xs text-slate-400">
+            <p>
+              BaseBoard · 3162 × 3162 grid · {cfg.name} ({cfg.chainId})
+            </p>
+            <nav className="flex items-center gap-2">
+              <Link href="/privacy" className="hover:text-base-blue">
+                Privacy
+              </Link>
+              <span aria-hidden="true">·</span>
+              <Link href="/terms" className="hover:text-base-blue">
+                Terms
+              </Link>
+            </nav>
+          </div>
         </div>
       </main>
 
       {/* Overlays */}
       <ProfileDrawer />
+      <LeaderboardDrawer />
       <PlotModal />
       <BuyModal />
       <Toaster />
+      <PendingTxRecovery />
     </div>
+    </AllMintedProvider>
   );
 }

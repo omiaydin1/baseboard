@@ -68,3 +68,15 @@ export function shortAddress(addr?: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
+
+/**
+ * Privacy-display address truncation showing the first 6 and last 6 characters
+ * with the middle hidden, e.g. `0x71aa…6f812b`. Used by the leaderboard rows and
+ * the activity ticker (a longer tail than `shortAddress`'s 6+4). A resolved
+ * Basename is middle-truncated the same way when it's too long to show in full.
+ */
+export function shortAddressLong(value?: string | null): string {
+  if (!value) return "—";
+  if (value.length <= 14) return value;
+  return `${value.slice(0, 6)}…${value.slice(-6)}`;
+}

@@ -8,11 +8,18 @@ import {
   useState,
 } from "react";
 import { usePublicClient, useAccount, useChainId } from "wagmi";
-import { baseBoardAbi } from "@/lib/contract";
+import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { clamp, plotIdFromXY, xyFromPlotId } from "@/lib/coords";
 import { parseZone, stripZone } from "@/lib/image";
+import {
+  DENSITY_ALPHA_CAP,
+  DENSITY_BUCKETS,
+  DENSITY_RECENT_MIN,
+  DENSITY_RECENT_WINDOW_BLOCKS,
+  DENSITY_RGB,
+} from "@/lib/density";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 
@@ -30,6 +37,13 @@ const GRID_FADE_START = 4; // px/cell where grid lines begin to appear
 const GRID_FADE_FULL = 12; // px/cell where grid lines are fully opaque
 const IMAGE_MIN_SCALE = 6; // px/cell before images are drawn
 const MAX_QUERY_CELLS = 1600; // cap on per-viewport contract reads
+const LOD_THUMB_DIM = 128; // longest side of the cached LOD thumbnail
+// Above this many on-screen image groups we always blit the cheap LOD
+// thumbnail instead of the full-resolution source, even when zoomed in.
+const LOD_FULL_MAX_GROUPS = 120;
+// When a whole billboard shrinks to roughly this few pixels on screen, paint a
+// flat dominant-colour swatch instead of scaling an image down to a dot.
+const LOD_SWATCH_PX = 4;
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
 
 /**
@@ -119,10 +133,14 @@ export function BaseBoardCanvas() {
   const imageCacheRef = useRef<Map<string, HTMLImageElement | "error">>(
     new Map(),
   );
-  // Baked, letterboxed (contain-fit) bitmaps keyed by image content + zone
-  // aspect. The contain-fit math runs once here, not per frame — the render
-  // loop only blits these onto the destination rect.
-  const bakedCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  // Level-of-detail cache keyed by image content. Each entry holds a small
+  // pre-downscaled thumbnail (aspect-preserved) plus the image's dominant
+  // colour. Computed once per image (not per frame) — the render loop blits the
+  // thumbnail stretched to fill the zone at low zoom, the full image at high
+  // zoom, and a flat dominant-colour swatch when the zone is only a few pixels.
+  const lodCacheRef = useRef<
+    Map<string, { thumb: HTMLCanvasElement; dominant: string }>
+  >(new Map());
   const [, forceTick] = useState(0);
   const requestRedraw = useCallback(() => {
     dirtyRef.current = true;
@@ -262,6 +280,25 @@ export function BaseBoardCanvas() {
     ctx.clip();
     drawPlots(ctx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
     ctx.restore();
+
+    // ---- Purchase-density overlay (Part 10.2) ----
+    // Additive translucent blue layer on top of the pixel fills, strictly
+    // clipped to the board rect so it can never bleed outside the frame. The
+    // coarse baked field is stretched across the board with bilinear smoothing
+    // for a soft gradient; its capped alpha keeps the underlying pixels visible.
+    const densityField = densityCanvasRef.current;
+    if (densityField && densityField.width > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(boardLeft, boardTop, boardSize, boardSize);
+      ctx.clip();
+      const prevSmoothing = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(densityField, boardLeft, boardTop, boardSize, boardSize);
+      ctx.imageSmoothingEnabled = prevSmoothing;
+      ctx.restore();
+    }
 
     // ---- Solid Base-blue outline marking the active grid boundary ----
     // Always visible so the playable map is clearly separated from the white
@@ -482,8 +519,11 @@ export function BaseBoardCanvas() {
         }
       });
 
-      // Draw one image per group, cover-fitted (no distortion) across its span.
+      // Draw one image per group, stretched (object-fit: fill) across its span.
+      // Above a threshold of visible groups we always use the cheap LOD
+      // thumbnail so a dense board never stalls the frame.
       if (drawImages) {
+        const manyGroups = groups.size > LOD_FULL_MAX_GROUPS;
         groups.forEach((g) => {
           const img = getImage(g.uri);
           if (!img || img === "error" || !img.complete || img.naturalWidth === 0)
@@ -519,8 +559,7 @@ export function BaseBoardCanvas() {
             ctx.rect(dx, dy, w, h);
           } else if (g.zone) {
             // Clip to the owner's loaded cells inside the zone so the image
-            // never bleeds onto plots they don't own. Fall back to the full
-            // bbox before neighbouring cells have loaded.
+            // never bleeds onto plots they don't own.
             let clipped = 0;
             map.forEach((p, id2) => {
               if (p.owner.toLowerCase() !== g.owner) return;
@@ -534,7 +573,16 @@ export function BaseBoardCanvas() {
               );
               clipped++;
             });
-            if (clipped === 0) ctx.rect(dx, dy, w, h);
+            if (clipped === 0) {
+              // The zone's cells haven't loaded yet. Drawing against the full
+              // unclipped bbox here would briefly bleed the image onto plots the
+              // owner may not actually hold (the wrong-render flash on fresh
+              // loads). Skip this group this frame and retry next frame once the
+              // cells arrive — the base owned-fill underneath keeps it non-blank.
+              ctx.restore();
+              dirtyRef.current = true;
+              return;
+            }
           } else {
             g.cells.forEach((c) => {
               ctx.rect(
@@ -547,10 +595,22 @@ export function BaseBoardCanvas() {
           }
           ctx.clip();
           try {
-            // Blit the pre-baked, letterboxed bitmap (contain-fit done once in
-            // getBaked) across the span — zero per-frame image fit math.
-            const baked = getBaked(g.uri, img, bx2 - bx1 + 1, by2 - by1 + 1);
-            if (baked) ctx.drawImage(baked, dx, dy, w, h);
+            const lod = getLod(g.uri, img);
+            if (lod && w <= LOD_SWATCH_PX && h <= LOD_SWATCH_PX) {
+              // Billboard is only a few pixels on screen — a flat dominant
+              // colour swatch is indistinguishable from a scaled image but far
+              // cheaper. (Still non-blank at the most zoomed-out levels.)
+              ctx.fillStyle = lod.dominant;
+              ctx.fillRect(dx, dy, w, h);
+            } else {
+              // Stretch (object-fit: fill) the source across the span, scaling
+              // X and Y independently to exactly fill the zone — no letterbox,
+              // no crop. Use the full image only when zoomed in with few groups;
+              // otherwise blit the cached low-res thumbnail for performance.
+              const useFull = preciseClip && !manyGroups;
+              const src = useFull || !lod ? img : lod.thumb;
+              ctx.drawImage(src, dx, dy, w, h);
+            }
           } catch {
             /* tainted/broken image — fill already drawn underneath */
           }
@@ -605,51 +665,58 @@ export function BaseBoardCanvas() {
   );
 
   /**
-   * Bake `img` letterboxed (contain-fit, no crop) into an offscreen canvas
-   * shaped to the zone's cell aspect ratio, caching by content + aspect. The
-   * destination rect drawn each frame shares that aspect, so blitting the baked
-   * canvas is distortion-free and the letterbox bars stay transparent. Returns
-   * null until the source image has finished decoding.
+   * Build (once, then cache) the level-of-detail entry for an image: a small
+   * aspect-preserved thumbnail plus the image's dominant colour. The thumbnail
+   * keeps the source's own proportions, so blitting it *stretched* to a zone
+   * yields the same object-fit: fill result as stretching the full image, just
+   * cheaper. Returns null until the source has finished decoding.
    */
-  const getBaked = useCallback(
+  const getLod = useCallback(
     (
       uri: string,
       img: HTMLImageElement,
-      cellsW: number,
-      cellsH: number,
-    ): HTMLCanvasElement | null => {
+    ): { thumb: HTMLCanvasElement; dominant: string } | null => {
       const iw = img.naturalWidth;
       const ih = img.naturalHeight;
-      if (!iw || !ih || cellsW <= 0 || cellsH <= 0) return null;
-      const aspect = cellsW / cellsH;
-      const key = `${stripZone(uri)}|${aspect.toFixed(4)}`;
-      const cache = bakedCacheRef.current;
+      if (!iw || !ih) return null;
+      const key = stripZone(uri);
+      const cache = lodCacheRef.current;
       const hit = cache.get(key);
       if (hit) return hit;
 
-      // Canvas matches the zone aspect; longest side capped so memory stays
-      // bounded (the on-chain source is already small, so this never upscales
-      // meaningfully).
-      const BAKE_MAX = 1024;
-      let cw: number;
-      let ch: number;
-      if (aspect >= 1) {
-        cw = BAKE_MAX;
-        ch = Math.max(1, Math.round(BAKE_MAX / aspect));
-      } else {
-        ch = BAKE_MAX;
-        cw = Math.max(1, Math.round(BAKE_MAX * aspect));
-      }
+      // Thumbnail: longest side capped at LOD_THUMB_DIM, aspect preserved.
+      const ratio = Math.min(1, LOD_THUMB_DIM / Math.max(iw, ih));
+      const tw = Math.max(1, Math.round(iw * ratio));
+      const th = Math.max(1, Math.round(ih * ratio));
       const canvas = document.createElement("canvas");
-      canvas.width = cw;
-      canvas.height = ch;
+      canvas.width = tw;
+      canvas.height = th;
       const c = canvas.getContext("2d");
       if (!c) return null;
       c.imageSmoothingEnabled = true;
       c.imageSmoothingQuality = "high";
-      drawContain(c, img, 0, 0, cw, ch);
-      cache.set(key, canvas);
-      return canvas;
+      c.drawImage(img, 0, 0, iw, ih, 0, 0, tw, th);
+
+      // Dominant colour: average the thumbnail down to 1×1. Cross-origin images
+      // without CORS taint the canvas and throw on read — fall back to a neutral
+      // Base-blue tint so the swatch path still has something to paint.
+      let dominant = "#9bbcf2";
+      try {
+        const one = document.createElement("canvas");
+        one.width = one.height = 1;
+        const oc = one.getContext("2d", { willReadFrequently: true });
+        if (oc) {
+          oc.drawImage(canvas, 0, 0, tw, th, 0, 0, 1, 1);
+          const [r, g, b] = oc.getImageData(0, 0, 1, 1).data;
+          dominant = `rgb(${r}, ${g}, ${b})`;
+        }
+      } catch {
+        /* tainted canvas — keep the neutral fallback */
+      }
+
+      const entry = { thumb: canvas, dominant };
+      cache.set(key, entry);
+      return entry;
     },
     [],
   );
@@ -679,12 +746,14 @@ export function BaseBoardCanvas() {
     if (ids.length === 0) return;
 
     try {
-      const result = (await publicClient.readContract({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "getPlotsBatch",
-        args: [ids],
-      })) as readonly Plot[];
+      const result = (await readContractWithTimeout(
+        publicClient.readContract({
+          address: cfg.contract,
+          abi: baseBoardAbi,
+          functionName: "getPlotsBatch",
+          args: [ids],
+        }),
+      )) as readonly Plot[];
 
       const map = plotMapRef.current;
       result.forEach((plot, i) => {
@@ -720,6 +789,67 @@ export function BaseBoardCanvas() {
   const lastScanBlockRef = useRef<number>(0);
   const globalLoadingRef = useRef(false);
 
+  // ---- Purchase-density overlay state (Part 10.2) ----
+  // Block at which each plot was last seen purchased (drives the recency
+  // window), the latest scanned block, and a low-res baked density field that
+  // renderBoard stretches over the board as a soft additive blue tint.
+  const purchaseBlockRef = useRef<Map<number, number>>(new Map());
+  const latestBlockRef = useRef<number>(0);
+  const densityCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Rebuild the baked density field from the current owned plots. Each owned
+  // plot contributes to its coarse bucket; recent purchases (within
+  // DENSITY_RECENT_WINDOW_BLOCKS of the latest block) are counted when there is
+  // enough recent activity, otherwise we fall back to the all-time field. The
+  // BUCKETS×BUCKETS field is normalized and written as per-pixel blue alpha so a
+  // single smooth-scaled drawImage produces the gradient (never recolouring the
+  // pixels themselves — this is a translucent layer on top).
+  const bakeDensity = useCallback(() => {
+    const map = plotMapRef.current;
+    const B = DENSITY_BUCKETS;
+    const recentThreshold = latestBlockRef.current - DENSITY_RECENT_WINDOW_BLOCKS;
+    const recent = new Float32Array(B * B);
+    const allTime = new Float32Array(B * B);
+    let recentCount = 0;
+    map.forEach((_plot, id) => {
+      const { x, y } = xyFromPlotId(id);
+      const bx = Math.min(B - 1, Math.floor((x / GRID_SIZE) * B));
+      const by = Math.min(B - 1, Math.floor((y / GRID_SIZE) * B));
+      const idx = by * B + bx;
+      allTime[idx] += 1;
+      const blk = purchaseBlockRef.current.get(id) ?? 0;
+      if (blk >= recentThreshold) {
+        recent[idx] += 1;
+        recentCount += 1;
+      }
+    });
+    const field = recentCount >= DENSITY_RECENT_MIN ? recent : allTime;
+    let max = 0;
+    for (let i = 0; i < field.length; i++) if (field[i] > max) max = field[i];
+
+    let off = densityCanvasRef.current;
+    if (!off) {
+      off = document.createElement("canvas");
+      densityCanvasRef.current = off;
+    }
+    off.width = B;
+    off.height = B;
+    const octx = off.getContext("2d");
+    if (!octx) return;
+    octx.clearRect(0, 0, B, B);
+    if (max <= 0) return;
+    const img = octx.createImageData(B, B);
+    for (let i = 0; i < field.length; i++) {
+      // Gamma softens the falloff so mid-density regions remain visible.
+      const level = Math.pow(field[i] / max, 0.6);
+      img.data[i * 4] = DENSITY_RGB.r;
+      img.data[i * 4 + 1] = DENSITY_RGB.g;
+      img.data[i * 4 + 2] = DENSITY_RGB.b;
+      img.data[i * 4 + 3] = Math.round(level * DENSITY_ALPHA_CAP * 255);
+    }
+    octx.putImageData(img, 0, 0);
+  }, []);
+
   const loadAllMinted = useCallback(async () => {
     if (!cfg.isConfigured || !publicClient) return;
     if (globalLoadingRef.current) return;
@@ -747,14 +877,20 @@ export function BaseBoardCanvas() {
             toBlock: BigInt(end),
           });
           logs.forEach((log) => {
+            const blk = Number(log.blockNumber ?? 0n);
             const args = log.args as { plotIds?: readonly bigint[] };
-            args.plotIds?.forEach((b) => allMintedIdsRef.current.add(Number(b)));
+            args.plotIds?.forEach((b) => {
+              const id = Number(b);
+              allMintedIdsRef.current.add(id);
+              purchaseBlockRef.current.set(id, blk);
+            });
           });
         } catch {
           /* range rejected by RPC — skip this window, keep going */
         }
       }
       lastScanBlockRef.current = latest;
+      latestBlockRef.current = latest;
 
       // 2) Refresh current state for every known plot id (chunked reads).
       const all = Array.from(allMintedIdsRef.current);
@@ -763,12 +899,14 @@ export function BaseBoardCanvas() {
       for (let i = 0; i < all.length; i += READ_CHUNK) {
         const slice = all.slice(i, i + READ_CHUNK);
         try {
-          const res = (await publicClient.readContract({
-            address: cfg.contract,
-            abi: baseBoardAbi,
-            functionName: "getPlotsBatch",
-            args: [slice.map((n) => BigInt(n))],
-          })) as readonly Plot[];
+          const res = (await readContractWithTimeout(
+            publicClient.readContract({
+              address: cfg.contract,
+              abi: baseBoardAbi,
+              functionName: "getPlotsBatch",
+              args: [slice.map((n) => BigInt(n))],
+            }),
+          )) as readonly Plot[];
           res.forEach((plot, j) => {
             const id = slice[j];
             if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
@@ -782,6 +920,7 @@ export function BaseBoardCanvas() {
           /* keep prior data for this chunk */
         }
       }
+      bakeDensity();
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     } catch {
@@ -789,7 +928,7 @@ export function BaseBoardCanvas() {
     } finally {
       globalLoadingRef.current = false;
     }
-  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock]);
+  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity]);
 
   // State isolation: when the active chain changes, wipe every
   // cached plot, the minted-id set, the log-scan cursor, decoded images and any
@@ -803,7 +942,11 @@ export function BaseBoardCanvas() {
     plotMapRef.current.clear();
     allMintedIdsRef.current.clear();
     lastScanBlockRef.current = 0;
+    purchaseBlockRef.current.clear();
+    latestBlockRef.current = 0;
+    densityCanvasRef.current = null;
     imageCacheRef.current.clear();
+    lodCacheRef.current.clear();
     clearOptimisticPlots();
     dirtyRef.current = true;
     forceTick((t) => t + 1);
@@ -1304,7 +1447,7 @@ export function BaseBoardCanvas() {
           <button
             type="button"
             onClick={toggleSelectMode}
-            title="Tap plots one-by-one to add them to a buy basket"
+            title="Tap pixels one-by-one to add them to a buy basket"
             className={`border-l-2 border-base-blue px-3 py-1.5 text-sm font-semibold ${
               selectMode ? "bg-base-blue text-white" : "text-base-blue"
             }`}
@@ -1376,33 +1519,6 @@ export function BaseBoardCanvas() {
       )}
     </div>
   );
-}
-
-/**
- * Draw `img` into the destination rect using "contain" logic — the image is
- * scaled to fit entirely inside the rect with no cropping, centered, leaving
- * transparent letterbox bars on the short axis. Mirrors CSS `object-fit:
- * contain`. Uses the 9-argument `drawImage` form against the full source.
- */
-function drawContain(
-  ctx: CanvasRenderingContext2D,
-  img: CanvasImageSource & { naturalWidth?: number; naturalHeight?: number },
-  dx: number,
-  dy: number,
-  dw: number,
-  dh: number,
-): void {
-  const iw =
-    img.naturalWidth ?? (img as { width?: number }).width ?? 0;
-  const ih =
-    img.naturalHeight ?? (img as { height?: number }).height ?? 0;
-  if (!iw || !ih || dw <= 0 || dh <= 0) return;
-  const scale = Math.min(dw / iw, dh / ih);
-  const drawW = iw * scale;
-  const drawH = ih * scale;
-  const offsetX = (dw - drawW) / 2;
-  const offsetY = (dh - drawH) / 2;
-  ctx.drawImage(img, 0, 0, iw, ih, dx + offsetX, dy + offsetY, drawW, drawH);
 }
 
 /** Resolve ipfs:// URIs (and bare CIDs) to an HTTP gateway. */

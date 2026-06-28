@@ -119,22 +119,22 @@ export function PlotModal() {
   };
 
   return (
-    <Modal open={open} onClose={close} title="Plot Details">
+    <Modal open={open} onClose={close} title="Pixel Details">
       {coords && (
         <div className="space-y-4">
           <div className="rounded-xl bg-blue-50 p-3 text-sm">
             <p className="font-semibold text-base-blue">
-              Plot ({coords.x}, {coords.y}) · id #{activePlotId}
+              Pixel ({coords.x}, {coords.y}) · id #{activePlotId}
             </p>
           </div>
 
           {isLoading ? (
             <div className="flex items-center gap-2 text-sm text-slate-500">
-              <Spinner size={16} /> Loading plot…
+              <Spinner size={16} /> Loading pixel…
             </div>
           ) : !isOwned ? (
             <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
-              This plot is unowned. Close and click it to buy.
+              This pixel is unowned. Close and click it to buy.
             </p>
           ) : (
             <>
@@ -142,8 +142,8 @@ export function PlotModal() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={displayImage}
-                  alt="plot artwork"
-                  className="h-40 w-full rounded-xl border-2 border-blue-100 object-cover"
+                  alt="pixel artwork"
+                  className="h-40 w-full rounded-xl border-2 border-blue-100 bg-slate-50 object-contain"
                 />
               )}
 

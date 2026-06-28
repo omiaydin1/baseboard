@@ -188,8 +188,9 @@ async function decodeDownsampled(file: File): Promise<DecodedImage> {
 /**
  * Re-encode `src` into a data URI whose longest side is at most `maxDim`,
  * always preserving the source's own aspect ratio (no cropping). Placement into
- * a multi-plot zone is handled at render time via contain-fit (letterbox), so
- * the bytes we store keep the whole picture instead of a cover-cropped slice.
+ * a multi-plot zone is handled at render time by stretching (object-fit: fill)
+ * the stored picture to exactly fill the zone, so the bytes we store keep the
+ * whole picture instead of a cover-cropped slice.
  */
 function encode(
   src: DecodedImage,
@@ -304,6 +305,32 @@ export function parseZone(uri: string): Zone | null {
     x2: Number(m[3]),
     y2: Number(m[4]),
   };
+}
+
+/**
+ * Resolve the spanning image/link covering grid cell (x, y) from a collection of
+ * an owner's plots. A multi-plot image is stored only on its anchor plot with a
+ * `#bb=x1,y1,x2,y2` zone fragment; every other covered pixel has an empty
+ * `imageUri`. This scans the candidate plots for the anchor whose zone contains
+ * (x, y) and returns its image + link. Shared by the canvas render path and the
+ * Pixel Details modal so the two never drift apart. Returns null when no zone
+ * covers the cell.
+ */
+export function resolveCoveringImage(
+  plots: Iterable<{ imageUri?: string | null } | null | undefined>,
+  x: number,
+  y: number,
+): { imageUri: string; link: string | null } | null {
+  for (const p of plots) {
+    const uri = p?.imageUri;
+    if (!uri) continue;
+    const z = parseZone(uri);
+    if (!z) continue;
+    if (x >= z.x1 && x <= z.x2 && y >= z.y1 && y <= z.y2) {
+      return { imageUri: uri, link: parseLink(uri) };
+    }
+  }
+  return null;
 }
 
 /** Parse a `link=<encoded url>` fragment, or null if absent. */

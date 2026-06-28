@@ -16,6 +16,11 @@ interface BoardUIState {
   setProfileOpen: (open: boolean) => void;
   toggleProfile: () => void;
 
+  /** Leaderboard drawer open/closed (same slide-in mechanism as profile). */
+  leaderboardOpen: boolean;
+  setLeaderboardOpen: (open: boolean) => void;
+  toggleLeaderboard: () => void;
+
   /** Currently inspected existing plot (opens the plot detail modal). */
   activePlotId: number | null;
   openPlot: (id: number) => void;
@@ -67,8 +72,15 @@ let _toastId = 0;
 
 export const useBoardStore = create<BoardUIState>((set) => ({
   profileOpen: false,
-  setProfileOpen: (open) => set({ profileOpen: open }),
-  toggleProfile: () => set((s) => ({ profileOpen: !s.profileOpen })),
+  setProfileOpen: (open) => set({ profileOpen: open, leaderboardOpen: false }),
+  toggleProfile: () =>
+    set((s) => ({ profileOpen: !s.profileOpen, leaderboardOpen: false })),
+
+  leaderboardOpen: false,
+  setLeaderboardOpen: (open) =>
+    set({ leaderboardOpen: open, profileOpen: false }),
+  toggleLeaderboard: () =>
+    set((s) => ({ leaderboardOpen: !s.leaderboardOpen, profileOpen: false })),
 
   activePlotId: null,
   openPlot: (id) =>

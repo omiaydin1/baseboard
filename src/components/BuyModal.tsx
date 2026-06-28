@@ -8,7 +8,7 @@ import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
-import { baseBoardAbi } from "@/lib/contract";
+import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { ZERO_ADDRESS } from "@/lib/constants";
 import {
   bboxToPlotIds,
@@ -31,7 +31,8 @@ export function BuyModal() {
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
-  const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
+  const { writeContractAsync, setPendingTxLabel, status, error, reset } =
+    useBaseBoardWrite();
 
   const [buyableIds, setBuyableIds] = useState<number[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -72,12 +73,14 @@ export function BuyModal() {
     setChecking(true);
     (async () => {
       try {
-        const result = (await publicClient.readContract({
-          address: cfg.contract,
-          abi: baseBoardAbi,
-          functionName: "getPlotsBatch",
-          args: [ids.map((i) => BigInt(i))],
-        })) as readonly Plot[];
+        const result = (await readContractWithTimeout(
+          publicClient.readContract({
+            address: cfg.contract,
+            abi: baseBoardAbi,
+            functionName: "getPlotsBatch",
+            args: [ids.map((i) => BigInt(i))],
+          }),
+        )) as readonly Plot[];
         if (cancelled) return;
         const free = ids.filter(
           (_, i) => result[i].owner.toLowerCase() === ZERO_ADDRESS,
@@ -100,6 +103,7 @@ export function BuyModal() {
   const onBuy = async () => {
     if (!buyableIds || buyableIds.length === 0) return;
     setTxError(null);
+    setPendingTxLabel("Purchase");
     try {
       await writeContractAsync({
         address: cfg.contract,
@@ -149,14 +153,14 @@ export function BuyModal() {
     <Modal
       open={open}
       onClose={close}
-      title={isSingle ? "Buy Plot" : "Buy Plots"}
+      title={isSingle ? "Buy Pixel" : "Buy Pixels"}
     >
       {open && (
         <div className="space-y-4">
           <div className="rounded-xl bg-blue-50 p-3 text-sm">
             {isSingle ? (
               <p className="font-semibold text-base-blue">
-                Plot ({xyFromPlotId(selectedIds[0]).x},{" "}
+                Pixel ({xyFromPlotId(selectedIds[0]).x},{" "}
                 {xyFromPlotId(selectedIds[0]).y}) · id #{selectedIds[0]}
               </p>
             ) : box ? (
@@ -165,18 +169,18 @@ export function BuyModal() {
               </p>
             ) : (
               <p className="font-semibold text-base-blue">
-                Basket selection · {totalCount.toLocaleString()} plots
+                Basket selection · {totalCount.toLocaleString()} pixels
               </p>
             )}
             <p className="mt-1 text-slate-600">
-              {totalCount.toLocaleString()} plots selected ·{" "}
+              {totalCount.toLocaleString()} pixels selected ·{" "}
               {cfg.plotPriceLabel} {cfg.nativeSymbol} each
             </p>
           </div>
 
           {tooLarge ? (
             <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700">
-              Selection too large. You can buy up to {MAX_BUY} plots per
+              Selection too large. You can buy up to {MAX_BUY} pixels per
               transaction — please select a smaller region.
             </p>
           ) : checking || buyableIds === null ? (
@@ -185,8 +189,8 @@ export function BuyModal() {
             </div>
           ) : buyCount === 0 ? (
             <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700">
-              All selected plots are already owned. Click an individual owned
-              plot to make an offer instead.
+              All selected pixels are already owned. Click an individual owned
+              pixel to make an offer instead.
             </p>
           ) : (
             <div className="flex items-center justify-between rounded-xl border-2 border-base-blue px-4 py-3">
@@ -195,7 +199,7 @@ export function BuyModal() {
                   Available to buy
                 </p>
                 <p className="text-lg font-black text-base-blue">
-                  {buyCount.toLocaleString()} plots
+                  {buyCount.toLocaleString()} pixels
                 </p>
               </div>
               <div className="text-right">
@@ -212,14 +216,14 @@ export function BuyModal() {
 
           {buyCount < totalCount && buyCount > 0 && !tooLarge && (
             <p className="text-xs text-slate-500">
-              {(totalCount - buyCount).toLocaleString()} plot(s) in this region
+              {(totalCount - buyCount).toLocaleString()} pixel(s) in this region
               are already owned and were excluded.
             </p>
           )}
 
           {status === "success" && (
             <p className="rounded-lg bg-green-50 p-3 text-sm font-semibold text-green-700">
-              Purchase confirmed! Your plots are now on the board.
+              Purchase confirmed! Your pixels are now on the board.
             </p>
           )}
           {(txError || error) && status !== "success" && (
@@ -256,7 +260,7 @@ export function BuyModal() {
                 : status === "confirming"
                   ? "Minting…"
                   : `Buy ${buyCount > 0 ? buyCount : ""} ${
-                      buyCount === 1 ? "plot" : "plots"
+                      buyCount === 1 ? "pixel" : "pixels"
                     }`}
             </button>
           )}
