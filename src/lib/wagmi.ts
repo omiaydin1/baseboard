@@ -5,7 +5,7 @@ import {
   cookieStorage,
   type CreateConnectorFn,
 } from "wagmi";
-import { base, celo, hardhat } from "wagmi/chains";
+import { base, hardhat } from "wagmi/chains";
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
 import { APP_LOGO_URL, APP_URL, DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
 
@@ -18,8 +18,8 @@ const LOCAL_RPC = "http://127.0.0.1:8545";
  * ABI-encoded payload). The EVM ignores trailing calldata, and our contract has
  * no `msg.data` length / raw-decode checks, so this is a safe, purely additive
  * change that credits BaseBoard's onchain volume on base.dev. Decodes to the
- * builder code: `62635f7a747634726b3178` == "bc_ztv4rk1x". Applied to Base only
- * (see `dataSuffix` in `getWagmiConfig`) — Celo transactions are untouched.
+ * builder code: `62635f7a747634726b3178` == "bc_ztv4rk1x". Applied to Base via
+ * the `dataSuffix` in `getWagmiConfig`.
  */
 export const BASE_BUILDER_CODE = "bc_ztv4rk1x";
 export const BASE_DATA_SUFFIX =
@@ -33,8 +33,7 @@ export const BASE_WALLET_ID = "baseWallet";
  * A dedicated "Base Wallet" row backed by the Coinbase smart-wallet (Base
  * Account) flow. We wrap the standard Coinbase connector and override its
  * id/name so it appears as its own branded desktop onboarding option distinct
- * from the classic "Coinbase Wallet" row. Both are Coinbase-family connectors
- * and therefore hidden on Celo (which the smart wallet doesn't support).
+ * from the classic "Coinbase Wallet" row.
  */
 function baseWalletConnector(): CreateConnectorFn {
   const inner = coinbaseWallet({
@@ -115,10 +114,8 @@ function installLocalProvider() {
 }
 
 /**
- * wagmi config for Base Mainnet (8453) + Celo Mainnet (42220), running
- * concurrently. Supports Coinbase Wallet, MetaMask / injected wallets, and
- * (optionally) WalletConnect. Note: Coinbase Smart Wallet does not support
- * Celo — the connect UI hides it while Celo is the active chain.
+ * wagmi config for Base Mainnet (8453). Supports Coinbase Wallet, MetaMask /
+ * injected wallets, and (optionally) WalletConnect.
  */
 export function getWagmiConfig() {
   installLocalProvider();
@@ -164,13 +161,11 @@ export function getWagmiConfig() {
 
   return createConfig({
     ...shared,
-    chains: [base, celo],
+    chains: [base],
     transports: {
       [base.id]: http(),
-      [celo.id]: http(),
     },
-    // ERC-8021 attribution applied to the Base client only. The per-chain map
-    // form leaves Celo's client without a suffix, so Celo calldata is untouched.
+    // ERC-8021 attribution applied to the Base client.
     dataSuffix: {
       [base.id]: BASE_DATA_SUFFIX,
     },

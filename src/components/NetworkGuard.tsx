@@ -10,9 +10,8 @@ import { Spinner } from "./Spinner";
 
 /**
  * Sticky warning shown only when a connected wallet is on a network BaseBoard
- * doesn't support (anything other than Base 8453 or Celo 42220). Offers a
- * one-click switch to the default chain. Supported networks are switched
- * between via the header NetworkSwitcher instead.
+ * doesn't support (anything other than Base 8453). Offers a one-click switch
+ * to Base.
  */
 export function NetworkGuard() {
   const { isConnected } = useAccount();
@@ -26,8 +25,7 @@ export function NetworkGuard() {
     <div className="w-full bg-amber-500 text-white">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-3 px-4 py-2 text-sm font-medium">
         <span>
-          Unsupported network. BaseBoard runs on{" "}
-          <strong>Base</strong> and <strong>Celo</strong>.
+          Unsupported network. BaseBoard runs on <strong>Base</strong>.
         </span>
         <button
           type="button"

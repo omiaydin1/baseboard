@@ -1,5 +1,5 @@
 import { parseEther } from "viem";
-import { base, celo } from "wagmi/chains";
+import { base } from "wagmi/chains";
 
 /** Width / height of the square grid (3162 x 3162 = 9,998,244 plots). */
 export const GRID_SIZE = 3162;
@@ -90,57 +90,12 @@ export const ICON_CACHE_BUST = `?v=${ICON_VERSION}`;
 export const APP_LOGO_URL = `${APP_URL}/icon.png${ICON_CACHE_BUST}`;
 
 // ---------------------------------------------------------------------------
-// Multi-chain configuration (Base + Celo)
+// Chain configuration (Base Mainnet)
 // ---------------------------------------------------------------------------
-// BaseBoard runs concurrently on Base Mainnet (8453) and Celo Mainnet (42220).
 // Every read/write resolves its contract address, mint price, treasury and
-// log-scan deploy block from the *active* chain via `getChainConfig(chainId)`,
-// so switching networks transparently isolates state to that chain. Base's
-// shipped behaviour is untouched — its config below mirrors the original
-// constants exactly.
+// log-scan deploy block from the active chain via `getChainConfig(chainId)`.
 
 export const BASE_CHAIN_ID = base.id; // 8453
-export const CELO_CHAIN_ID = celo.id; // 42220
-
-/**
- * Celo Mainnet BaseBoard — live contract deployed at block 69652905
- * (price 1.3 CELO, treasury 0x71aad…812b). Override via env if redeployed.
- */
-export const CELO_CONTRACT_ADDRESS = (process.env
-  .NEXT_PUBLIC_CELO_CONTRACT_ADDRESS ||
-  "0x7b5E66cD88305aB33CE2c2C400167B7fFF348a23") as `0x${string}`;
-
-/**
- * Treasury that receives Celo mint fees. The real routing lives *inside* the
- * deployed contract; this constant is for the frontend (display / parity) and
- * should match the `TREASURY` baked into the Celo deployment.
- */
-export const CELO_TREASURY_ADDRESS = (process.env
-  .NEXT_PUBLIC_CELO_TREASURY_ADDRESS ||
-  "0x71aad1110dfd8f60249cd45ce4fb05163b6f812b") as `0x${string}`;
-
-/**
- * Flat primary price per plot on Celo, as a decimal-CELO string. Fixed at
- * 1.3 CELO per plot (the ~0.1 USDC token equivalent at current rates).
- * Override via `NEXT_PUBLIC_CELO_PLOT_PRICE` if the CELO/USD rate shifts.
- */
-export const CELO_PLOT_PRICE = process.env.NEXT_PUBLIC_CELO_PLOT_PRICE || "1.3";
-export const CELO_PLOT_PRICE_WEI = parseEther(CELO_PLOT_PRICE);
-
-/** Block the Celo BaseBoard was deployed at (used as the log-scan floor). */
-export const CELO_DEPLOY_BLOCK = Number(
-  process.env.NEXT_PUBLIC_CELO_DEPLOY_BLOCK || "69652905",
-);
-
-/**
- * Optional ENS-compatible universal resolver for Celo Name Service (.celo)
- * reverse lookups. Celo has no single canonical public reverse registry, so
- * this is env-driven: when an address is provided, a connected Celo account is
- * resolved to its human-readable name; otherwise the UI falls back to the short
- * hex address. (Base basenames resolve out of the box via OnchainKit.)
- */
-export const CELO_NAME_UNIVERSAL_RESOLVER = (process.env
-  .NEXT_PUBLIC_CELO_NAME_RESOLVER || "") as string;
 
 /** Per-chain configuration consumed everywhere reads/writes happen. */
 export interface ChainConfig {
@@ -157,7 +112,7 @@ export interface ChainConfig {
   plotPriceWei: bigint;
   /** Decimal price string for display. */
   plotPriceLabel: string;
-  /** Native currency symbol (ETH / CELO). */
+  /** Native currency symbol (ETH). */
   nativeSymbol: string;
   /** Treasury receiving mint fees (on-chain authoritative). */
   treasury: `0x${string}`;
@@ -187,21 +142,6 @@ const BASE_CONFIG: ChainConfig = {
   explorer: "https://basescan.org",
 };
 
-const CELO_CONFIG: ChainConfig = {
-  chainId: CELO_CHAIN_ID,
-  name: "Celo Mainnet",
-  shortName: "Celo",
-  contract: CELO_CONTRACT_ADDRESS,
-  isConfigured: isNonZero(CELO_CONTRACT_ADDRESS),
-  plotPriceWei: CELO_PLOT_PRICE_WEI,
-  plotPriceLabel: CELO_PLOT_PRICE,
-  nativeSymbol: "CELO",
-  treasury: CELO_TREASURY_ADDRESS,
-  deployBlock: CELO_DEPLOY_BLOCK,
-  rpcUrl: "https://forno.celo.org",
-  explorer: "https://celoscan.io",
-};
-
 const LOCAL_CONFIG: ChainConfig = {
   chainId: LOCAL_CHAIN_ID,
   name: "Local Hardhat",
@@ -220,7 +160,7 @@ const LOCAL_CONFIG: ChainConfig = {
 /** All chains the app supports in the current mode. */
 export const CHAIN_CONFIGS: ChainConfig[] = DEV_LOCAL
   ? [LOCAL_CONFIG]
-  : [BASE_CONFIG, CELO_CONFIG];
+  : [BASE_CONFIG];
 
 /** Chain shown / targeted when disconnected or on an unsupported network. */
 export const DEFAULT_CHAIN_CONFIG: ChainConfig = CHAIN_CONFIGS[0];

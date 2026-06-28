@@ -25,7 +25,7 @@ contract BaseBoard {
     uint256 public constant MAX_PLOTS = GRID_SIZE * GRID_SIZE;
 
     /// @notice Flat primary mint price per plot (set at deploy time, native
-    ///         units). Base: 0.00005 ETH. Celo: 1.3 CELO.
+    ///         units). Base: 0.00005 ETH.
     uint256 public immutable PLOT_PRICE;
 
     /// @notice Treasury that receives 100% of primary purchase proceeds
