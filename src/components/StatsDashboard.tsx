@@ -1,7 +1,11 @@
 "use client";
 
-import { useBoardStats } from "@/hooks/useBaseBoard";
-import { DISPLAY_MAX_PLOTS, IS_CONTRACT_CONFIGURED } from "@/lib/constants";
+import {
+  PIXELS_REMAINING_DISPLAY,
+  PIXELS_SOLD_DISPLAY,
+  SOLD_PCT_DISPLAY,
+} from "@/lib/constants";
+import { SoldOutStamp } from "./SoldOutStamp";
 
 function StatCard({
   label,
@@ -30,35 +34,43 @@ function StatCard({
   );
 }
 
-/** Reactive dashboard: total sold + remaining, refreshed via polling + events. */
+/**
+ * Dashboard headline stats. Values are fixed display constants for now (see
+ * `constants.ts`) — Total Pixels Sold / Remaining Available / Sold %. A red
+ * "SOLD OUT" stamp overlays the stats once `remaining` hits 0 (won't trigger
+ * while the count is hardcoded above zero, but is wired so it activates
+ * automatically when live tracking is added later).
+ */
 export function StatsDashboard() {
-  const { sold, remaining } = useBoardStats();
-  const pct = ((sold / DISPLAY_MAX_PLOTS) * 100).toFixed(4);
+  const sold = PIXELS_SOLD_DISPLAY;
+  const remaining = PIXELS_REMAINING_DISPLAY;
+  const pct = SOLD_PCT_DISPLAY;
+  const soldOut = remaining === 0;
 
   return (
     <div className="w-full">
-      <div className="flex flex-wrap items-stretch gap-2">
-        <StatCard label="Total Plots Sold" value={sold.toLocaleString()} accent />
-        <StatCard
-          label="Remaining Available"
-          value={remaining.toLocaleString()}
-        />
-        <StatCard label="Sold %" value={`${pct}%`} />
-        <div className="flex items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
-          </span>
-          <span className="text-xs font-semibold text-green-700">Live</span>
+      <div className="relative">
+        <div className="flex flex-wrap items-stretch gap-2">
+          <StatCard
+            label="Total Pixels Sold"
+            value={sold.toLocaleString()}
+            accent
+          />
+          <StatCard
+            label="Remaining Available"
+            value={remaining.toLocaleString()}
+          />
+          <StatCard label="Sold %" value={`${pct}%`} />
+          <div className="flex items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 px-3 py-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
+            </span>
+            <span className="text-xs font-semibold text-green-700">Live</span>
+          </div>
         </div>
+        {soldOut && <SoldOutStamp />}
       </div>
-      {!IS_CONTRACT_CONFIGURED && (
-        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
-          Contract address not configured. Set{" "}
-          <code className="font-mono">NEXT_PUBLIC_BASEBOARD_CONTRACT_ADDRESS</code>{" "}
-          to enable live on-chain stats and transactions.
-        </p>
-      )}
       <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
         <div
           className="h-full rounded-full bg-base-blue transition-all"

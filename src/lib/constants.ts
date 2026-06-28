@@ -7,8 +7,27 @@ export const GRID_SIZE = 3162;
 /** Number of treatable plots on the grid. */
 export const TOTAL_PLOTS = GRID_SIZE * GRID_SIZE; // 9,998,244
 
-/** Marketing figure shown in the UI ("10 million plots"). */
-export const DISPLAY_MAX_PLOTS = 10_000_000;
+/**
+ * Grid total shown in the UI. Corrected to the real grid size (3162 × 3162 =
+ * 9,998,244) — the old "10,000,000" marketing figure was always slightly wrong.
+ */
+export const DISPLAY_MAX_PLOTS = TOTAL_PLOTS; // 9,998,244
+
+/**
+ * Hardcoded dashboard stats. These are intentionally NOT wired to live on-chain
+ * reads in this task — they are fixed display constants (a live on-chain count
+ * is planned for a future task). `totalPlotsSold` on the contract still reflects
+ * real ownership; these constants only drive the dashboard's headline numbers.
+ *   Total Pixels Sold : 158
+ *   Remaining Available: 9,998,086  (= 9,998,244 − 158)
+ *   Sold %            : 0.0016%     (= 158 / 9,998,244 × 100, 4 dp)
+ */
+export const PIXELS_SOLD_DISPLAY = 158;
+export const PIXELS_REMAINING_DISPLAY = TOTAL_PLOTS - PIXELS_SOLD_DISPLAY; // 9,998,086
+export const SOLD_PCT_DISPLAY = (
+  (PIXELS_SOLD_DISPLAY / TOTAL_PLOTS) *
+  100
+).toFixed(4); // "0.0016"
 
 /** Flat primary price per plot, as a decimal-ETH string. */
 export const PLOT_PRICE_ETH = "0.00005";

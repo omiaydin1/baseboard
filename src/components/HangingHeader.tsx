@@ -57,7 +57,7 @@ export function HangingHeader() {
           BaseBoard
         </h1>
         <p className="mt-0 text-center text-[10px] font-semibold uppercase tracking-[0.25em] text-base-light">
-          10,000,000 plots · {cfg.name}
+          9,998,244 pixels · {cfg.name}
         </p>
       </div>
     </div>
