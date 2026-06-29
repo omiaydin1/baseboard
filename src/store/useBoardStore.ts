@@ -91,7 +91,7 @@ export const useBoardStore = create<BoardUIState>((set) => ({
   toggleLeaderboard: () =>
     set((s) => ({ leaderboardOpen: !s.leaderboardOpen, profileOpen: false })),
 
-  densityEnabled: true,
+  densityEnabled: false,
   setDensityEnabled: (on) => set({ densityEnabled: on }),
   toggleDensity: () => set((s) => ({ densityEnabled: !s.densityEnabled })),
 

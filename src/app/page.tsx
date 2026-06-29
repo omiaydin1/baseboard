@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { BaseBoardCanvas } from "@/components/BaseBoardCanvas";
 import { HangingHeader } from "@/components/HangingHeader";
@@ -18,6 +19,7 @@ import { PendingTxRecovery } from "@/components/PendingTxRecovery";
 import { AllMintedProvider } from "@/hooks/useAllMintedContext";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
+import { GRID_SIZE } from "@/lib/constants";
 
 /** Person silhouette icon preceding "My Profile". */
 function ProfileIcon() {
@@ -52,7 +54,22 @@ function TrophyIcon() {
 export default function Home() {
   const toggleProfile = useBoardStore((s) => s.toggleProfile);
   const toggleLeaderboard = useBoardStore((s) => s.toggleLeaderboard);
+  const openPlot = useBoardStore((s) => s.openPlot);
+  const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
   const cfg = useActiveChainConfig();
+
+  // Deep link: `?pixel=<id>` auto-opens the existing Pixel Details modal for
+  // that pixel on load (and flies the camera to it), reusing the same
+  // open-plot mechanism the board's own click handler uses — no new route.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = new URLSearchParams(window.location.search).get("pixel");
+    if (raw == null) return;
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id < 0 || id >= GRID_SIZE * GRID_SIZE) return;
+    openPlot(id);
+    setFocusPlotId(id);
+  }, [openPlot, setFocusPlotId]);
 
   return (
     <AllMintedProvider>
