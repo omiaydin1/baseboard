@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useAccount,
   useChainId,
@@ -44,7 +44,9 @@ export function useBoardStats() {
     functionName: "totalPlotsSold",
     query: {
       enabled: cfg.isConfigured,
-      refetchInterval: 15_000,
+      // Slow background poll (60s) to limit RPC load / credit consumption; the
+      // `PlotsPurchased` watcher below still refetches immediately on any sale.
+      refetchInterval: 60_000,
     },
   });
 
@@ -372,16 +374,68 @@ export interface AllMintedData {
  * current count (NOT their first-ever purchase block) — computed by replaying
  * purchase events in chronological block order, exactly as specified.
  */
+
+/**
+ * Pure ranking builder: given the raw purchase log and current owner counts,
+ * replay purchases chronologically for the tie-break key, then sort by count
+ * (desc) with earlier-block wins. Kept pure (no hooks) so the leaderboard can
+ * memoize it and run the sort/tie-break exactly once per fresh data batch
+ * instead of on every render.
+ */
+function buildRanking(
+  purchases: readonly PurchaseEvent[],
+  counts: ReadonlyArray<readonly [string, number]>,
+): LeaderEntry[] {
+  const currentCounts = new Map(counts);
+
+  // Tie-break: replay purchases in chronological (block) order, tracking each
+  // buyer's running purchased total; record the block at which that running
+  // total first reaches the buyer's *current* owned count.
+  const chronological = [...purchases].sort((a, b) => a.block - b.block);
+  const runningTotal = new Map<string, number>();
+  const tieBreak = new Map<string, number>();
+  const lastPurchaseBlock = new Map<string, number>();
+  for (const p of chronological) {
+    lastPurchaseBlock.set(p.buyer, p.block);
+    const next = (runningTotal.get(p.buyer) ?? 0) + p.count;
+    runningTotal.set(p.buyer, next);
+    const target = currentCounts.get(p.buyer);
+    if (target != null && next >= target && !tieBreak.has(p.buyer)) {
+      tieBreak.set(p.buyer, p.block);
+    }
+  }
+
+  return Array.from(currentCounts.entries())
+    .map(([owner, count]) => ({
+      owner: owner as `0x${string}`,
+      count,
+      // Fall back to the owner's last purchase block when the running total
+      // never reached their current count (e.g. acquired via resale).
+      tieBreakBlock:
+        tieBreak.get(owner) ??
+        lastPurchaseBlock.get(owner) ??
+        Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((a, b) =>
+      b.count !== a.count ? b.count - a.count : a.tieBreakBlock - b.tieBreakBlock,
+    )
+    .map((e, i) => ({ ...e, rank: i + 1 }));
+}
+
 export function useAllMintedPlots(): AllMintedData {
   const cfg = useActiveChainConfig();
   const publicClient = usePublicClient();
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
 
-  const [data, setData] = useState<AllMintedData>({
-    loading: false,
-    ranking: [],
-    events: [],
-  });
+  // Raw, *unsorted* scan output held in state. It is replaced only when a fresh
+  // on-chain batch fully resolves (a "state lock") — the derived leaderboard
+  // therefore never re-orders due to incidental background re-renders, only when
+  // genuinely new plot data arrives.
+  const [raw, setRaw] = useState<{
+    loading: boolean;
+    purchases: PurchaseEvent[];
+    counts: Array<[string, number]>;
+  }>({ loading: false, purchases: [], counts: [] });
 
   // Live refresh: re-scan whenever a `PlotsPurchased` event lands (anyone's
   // purchase, not just the local wallet's) and on a slow safety interval, so the
@@ -406,13 +460,13 @@ export function useAllMintedPlots(): AllMintedData {
 
   useEffect(() => {
     if (!cfg.isConfigured || !publicClient) {
-      setData({ loading: false, ranking: [], events: [] });
+      setRaw({ loading: false, purchases: [], counts: [] });
       return;
     }
     let cancelled = false;
     if (runningRef.current) return;
     runningRef.current = true;
-    setData((d) => ({ ...d, loading: true }));
+    setRaw((d) => ({ ...d, loading: true }));
 
     (async () => {
       try {
@@ -475,50 +529,16 @@ export function useAllMintedPlots(): AllMintedData {
           }
         }
 
-        // Tie-break: replay purchases in chronological (block) order, tracking
-        // each buyer's running purchased total; record the block at which that
-        // running total first reaches the buyer's *current* owned count.
-        const chronological = [...purchases].sort((a, b) => a.block - b.block);
-        const runningTotal = new Map<string, number>();
-        const tieBreak = new Map<string, number>();
-        const lastPurchaseBlock = new Map<string, number>();
-        for (const p of chronological) {
-          lastPurchaseBlock.set(p.buyer, p.block);
-          const next = (runningTotal.get(p.buyer) ?? 0) + p.count;
-          runningTotal.set(p.buyer, next);
-          const target = currentCounts.get(p.buyer);
-          if (
-            target != null &&
-            next >= target &&
-            !tieBreak.has(p.buyer)
-          ) {
-            tieBreak.set(p.buyer, p.block);
-          }
-        }
-
-        const ranking: LeaderEntry[] = Array.from(currentCounts.entries())
-          .map(([owner, count]) => ({
-            owner: owner as `0x${string}`,
-            count,
-            // Fall back to the owner's last purchase block when the running
-            // total never reached their current count (e.g. acquired via resale).
-            tieBreakBlock:
-              tieBreak.get(owner) ?? lastPurchaseBlock.get(owner) ?? Number.MAX_SAFE_INTEGER,
-          }))
-          .sort((a, b) =>
-            b.count !== a.count
-              ? b.count - a.count
-              : a.tieBreakBlock - b.tieBreakBlock,
-          )
-          .map((e, i) => ({ ...e, rank: i + 1 }));
-
-        const events = [...purchases]
-          .sort((a, b) => b.block - a.block)
-          .slice(0, 20);
-
-        if (!cancelled) setData({ loading: false, ranking, events });
+        // Hand the raw batch to state; sorting/tie-break happens once in the
+        // memo below, not here and not on every render.
+        if (!cancelled)
+          setRaw({
+            loading: false,
+            purchases,
+            counts: Array.from(currentCounts.entries()),
+          });
       } catch {
-        if (!cancelled) setData((d) => ({ ...d, loading: false }));
+        if (!cancelled) setRaw((d) => ({ ...d, loading: false }));
       } finally {
         runningRef.current = false;
       }
@@ -537,5 +557,18 @@ export function useAllMintedPlots(): AllMintedData {
     liveTick,
   ]);
 
-  return data;
+  // Sort + tie-break ONCE per fresh batch: these memos only recompute when the
+  // underlying raw arrays' identity changes (i.e. a new scan landed), so a mere
+  // `loading` flip or any incidental re-render reuses the previous sorted array
+  // and the leaderboard never "jumps".
+  const ranking = useMemo(
+    () => buildRanking(raw.purchases, raw.counts),
+    [raw.purchases, raw.counts],
+  );
+  const events = useMemo(
+    () => [...raw.purchases].sort((a, b) => b.block - a.block).slice(0, 20),
+    [raw.purchases],
+  );
+
+  return { loading: raw.loading, ranking, events };
 }
