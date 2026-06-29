@@ -1,6 +1,6 @@
 "use client";
 
-import { DISPLAY_MAX_PLOTS, PIXELS_SOLD_DISPLAY } from "@/lib/constants";
+import { DISPLAY_MAX_PLOTS } from "@/lib/constants";
 import { useBoardStats } from "@/hooks/useBaseBoard";
 import { SoldOutStamp } from "./SoldOutStamp";
 import { ActivityTicker } from "./ActivityTicker";
@@ -48,10 +48,11 @@ function StatCard({
  * ticker) rather than being a bulky bordered box in the cards row.
  */
 export function StatsDashboard() {
-  const { sold: liveSold, isLoading } = useBoardStats();
-  // Until the first live read lands, fall back to the known display count so the
-  // headline never flashes "0" / "0.0000%".
-  const sold = isLoading && liveSold === 0 ? PIXELS_SOLD_DISPLAY : liveSold;
+  const { sold } = useBoardStats();
+  // Initial/empty-state baseline is a genuinely empty board (0 sold /
+  // DISPLAY_MAX_PLOTS remaining / 0.0000%) — NOT stale placeholder data. The
+  // animated digit roll plays from this baseline to the live on-chain values
+  // once the first read lands.
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
   const pct = ((sold / DISPLAY_MAX_PLOTS) * 100).toFixed(4);
   const soldOut = remaining === 0;
