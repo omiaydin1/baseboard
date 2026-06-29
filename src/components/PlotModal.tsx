@@ -31,6 +31,7 @@ export function PlotModal() {
 
   const [offerEth, setOfferEth] = useState("");
   const [txError, setTxError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const open = activePlotId != null;
   const coords = activePlotId != null ? xyFromPlotId(activePlotId) : null;
@@ -111,6 +112,46 @@ export function PlotModal() {
       }),
     );
 
+  // Shareable deep link that re-opens THIS pixel's detail modal on load
+  // (read by the app's `?pixel=<id>` handler), available for every owned pixel
+  // regardless of whether it has a custom image/link set.
+  const pixelShareUrl = () =>
+    typeof window !== "undefined"
+      ? `${window.location.origin}/?pixel=${activePlotId}`
+      : "";
+
+  const onShareX = () => {
+    const text = "I just claimed my spot on BaseBoard \u{1F7E6} #Base @base";
+    const url = pixelShareUrl();
+    const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(
+      text,
+    )}&url=${encodeURIComponent(url)}`;
+    window.open(intent, "_blank", "noopener,noreferrer");
+  };
+
+  const onCopyLink = async () => {
+    const url = pixelShareUrl();
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // Fallback for browsers without the async clipboard API.
+      const el = document.createElement("textarea");
+      el.value = url;
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      document.body.appendChild(el);
+      el.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* clipboard unavailable — nothing else to try */
+      }
+      document.body.removeChild(el);
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  };
+
   const close = () => {
     reset();
     setOfferEth("");
@@ -188,6 +229,25 @@ export function PlotModal() {
                   </div>
                 )}
               </dl>
+
+              {/* Share / copy-link — secondary actions available on every owned
+                  pixel, independent of whether it has an image/link set. */}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={onShareX}
+                  className="flex-1 rounded-lg border-2 border-base-blue py-2 text-sm font-semibold text-base-blue hover:bg-blue-50"
+                >
+                  Share on X
+                </button>
+                <button
+                  type="button"
+                  onClick={onCopyLink}
+                  className="flex-1 rounded-lg border-2 border-base-blue py-2 text-sm font-semibold text-base-blue hover:bg-blue-50"
+                >
+                  {copied ? "Copied!" : "Copy Link"}
+                </button>
+              </div>
 
               {status === "success" ? (
                 <p className="rounded-lg bg-green-50 p-3 text-sm font-semibold text-green-700">

@@ -101,6 +101,28 @@ export function usePlot(plotId: number | null) {
   // open/close cycles while the RPC node catches up.
   const onchain = query.data as Plot | undefined;
   const override = plotId != null ? optimisticPlots[plotId] : undefined;
+
+  // A lagging / load-balanced public RPC node sometimes returns a stale
+  // zero-owner read for a plot we already know (optimistically) to be owned.
+  // Don't let that stale read override known-good local state: when the fresh
+  // on-chain read says ZERO_ADDRESS but an override shows a real owner, keep
+  // the override (it wins even after `onchain` has resolved, not only before).
+  const overrideOwned =
+    !!override && override.owner.toLowerCase() !== ZERO_ADDRESS;
+  const onchainZero =
+    !!onchain && onchain.owner.toLowerCase() === ZERO_ADDRESS;
+  const staleZeroConflict = overrideOwned && onchainZero;
+
+  // If the fresh read contradicts a known-good override by claiming the plot is
+  // unowned, don't accept that first read — schedule one more refetch after a
+  // short delay to give the lagging node a chance to catch up.
+  useEffect(() => {
+    if (!enabled || !staleZeroConflict) return;
+    const t = setTimeout(() => void query.refetch(), 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, staleZeroConflict]);
+
   const plot = override ?? onchain;
   const isOwned = !!plot && plot.owner.toLowerCase() !== ZERO_ADDRESS;
 
@@ -428,6 +450,57 @@ function buildRanking(
     .map((e, i) => ({ ...e, rank: i + 1 }));
 }
 
+/**
+ * Snapshot of a completed scan persisted to `sessionStorage` so a mid-session
+ * page reload can hydrate the leaderboard/ticker instantly and resume the
+ * incremental scan from `lastScannedBlock` instead of re-walking the full
+ * history from `cfg.deployBlock`. Plain JSON — no extra state dependency.
+ */
+interface PersistedScan {
+  lastScannedBlock: number;
+  purchases: PurchaseEvent[];
+  mintedIds: number[];
+  counts: Array<[string, number]>;
+}
+
+function scanCacheKey(contract?: string): string | null {
+  return contract ? `baseboard:scan:${contract.toLowerCase()}` : null;
+}
+
+function loadPersistedScan(contract?: string): PersistedScan | null {
+  if (typeof window === "undefined") return null;
+  const key = scanCacheKey(contract);
+  if (!key) return null;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedScan;
+    if (
+      !parsed ||
+      typeof parsed.lastScannedBlock !== "number" ||
+      !Array.isArray(parsed.purchases) ||
+      !Array.isArray(parsed.mintedIds) ||
+      !Array.isArray(parsed.counts)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePersistedScan(contract: string | undefined, snap: PersistedScan) {
+  if (typeof window === "undefined") return;
+  const key = scanCacheKey(contract);
+  if (!key) return;
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(snap));
+  } catch {
+    /* quota exceeded / serialization error — caching is best-effort, skip */
+  }
+}
+
 export function useAllMintedPlots(): AllMintedData {
   const cfg = useActiveChainConfig();
   const publicClient = usePublicClient();
@@ -469,17 +542,45 @@ export function useAllMintedPlots(): AllMintedData {
   // trigger only reads NEW logs (lastScannedBlock+1 .. latest) and merges them
   // into the accumulated purchases/mintedIds, instead of re-scanning the whole
   // history from the deploy block every time (which made owner counts unstable).
+  // Hydrated synchronously from the sessionStorage snapshot so a mid-session
+  // reload resumes the scan from the persisted block, not the deploy block —
+  // only a true first-ever visit (empty cache) pays the full historical scan.
   const scanStateRef = useRef<{
     contract: string | undefined;
     lastScannedBlock: number;
     purchases: PurchaseEvent[];
     mintedIds: Set<number>;
-  }>({
-    contract: undefined,
-    lastScannedBlock: 0,
-    purchases: [],
-    mintedIds: new Set(),
-  });
+  } | null>(null);
+  if (scanStateRef.current === null) {
+    const snap = loadPersistedScan(cfg.contract);
+    scanStateRef.current = snap
+      ? {
+          contract: cfg.contract,
+          lastScannedBlock: snap.lastScannedBlock,
+          purchases: snap.purchases,
+          mintedIds: new Set(snap.mintedIds),
+        }
+      : {
+          contract: undefined,
+          lastScannedBlock: 0,
+          purchases: [],
+          mintedIds: new Set(),
+        };
+  }
+
+  // One-time hydration of the displayed data from the persisted snapshot so a
+  // mid-session reload paints the last-known ranking/ticker immediately while
+  // the incremental scan below refreshes it in the background.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    const snap = loadPersistedScan(cfg.contract);
+    if (snap && (snap.purchases.length > 0 || snap.counts.length > 0)) {
+      setRaw({ loading: false, purchases: snap.purchases, counts: snap.counts });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!cfg.isConfigured || !publicClient) {
@@ -502,7 +603,13 @@ export function useAllMintedPlots(): AllMintedData {
         const latest = Number(await publicClient.getBlockNumber());
 
         // Reset the accumulator when the active contract changes.
-        const st = scanStateRef.current;
+        const st = scanStateRef.current ?? {
+          contract: undefined,
+          lastScannedBlock: 0,
+          purchases: [] as PurchaseEvent[],
+          mintedIds: new Set<number>(),
+        };
+        scanStateRef.current = st;
         if (st.contract !== cfg.contract) {
           st.contract = cfg.contract;
           st.lastScannedBlock = 0;
@@ -589,11 +696,22 @@ export function useAllMintedPlots(): AllMintedData {
 
         // Hand the raw batch to state; sorting/tie-break happens once in the
         // memo below, not here and not on every render.
+        const counts = Array.from(currentCounts.entries());
+
+        // Persist the snapshot so the next reload hydrates instantly and the
+        // scan resumes from `lastScannedBlock` rather than the deploy block.
+        savePersistedScan(cfg.contract, {
+          lastScannedBlock: st.lastScannedBlock,
+          purchases: st.purchases,
+          mintedIds: Array.from(st.mintedIds),
+          counts,
+        });
+
         if (!cancelled)
           setRaw({
             loading: false,
             purchases: [...st.purchases],
-            counts: Array.from(currentCounts.entries()),
+            counts,
             scanIncomplete,
           });
       } catch {
