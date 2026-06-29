@@ -358,6 +358,12 @@ export interface AllMintedData {
   ranking: LeaderEntry[];
   /** Recent purchases, most-recent-first, for the activity ticker. */
   events: PurchaseEvent[];
+  /**
+   * True when one or more `eth_getLogs` chunks failed every retry, so the
+   * discovery scan is missing that block range's purchases (the result is a
+   * best-effort partial rather than a complete history).
+   */
+  scanIncomplete?: boolean;
 }
 
 /**
@@ -435,6 +441,7 @@ export function useAllMintedPlots(): AllMintedData {
     loading: boolean;
     purchases: PurchaseEvent[];
     counts: Array<[string, number]>;
+    scanIncomplete?: boolean;
   }>({ loading: false, purchases: [], counts: [] });
 
   // Live refresh: re-scan whenever a `PlotsPurchased` event lands (anyone's
@@ -458,9 +465,31 @@ export function useAllMintedPlots(): AllMintedData {
 
   const runningRef = useRef(false);
 
+  // Persisted, incremental discovery state scoped to the active contract. Each
+  // trigger only reads NEW logs (lastScannedBlock+1 .. latest) and merges them
+  // into the accumulated purchases/mintedIds, instead of re-scanning the whole
+  // history from the deploy block every time (which made owner counts unstable).
+  const scanStateRef = useRef<{
+    contract: string | undefined;
+    lastScannedBlock: number;
+    purchases: PurchaseEvent[];
+    mintedIds: Set<number>;
+  }>({
+    contract: undefined,
+    lastScannedBlock: 0,
+    purchases: [],
+    mintedIds: new Set(),
+  });
+
   useEffect(() => {
     if (!cfg.isConfigured || !publicClient) {
-      setRaw({ loading: false, purchases: [], counts: [] });
+      scanStateRef.current = {
+        contract: undefined,
+        lastScannedBlock: 0,
+        purchases: [],
+        mintedIds: new Set(),
+      };
+      setRaw({ loading: false, purchases: [], counts: [], scanIncomplete: false });
       return;
     }
     let cancelled = false;
@@ -471,41 +500,70 @@ export function useAllMintedPlots(): AllMintedData {
     (async () => {
       try {
         const latest = Number(await publicClient.getBlockNumber());
-        const purchases: PurchaseEvent[] = [];
-        const mintedIds = new Set<number>();
 
-        const LOG_CHUNK = 9_500;
-        for (let start = cfg.deployBlock; start <= latest; start += LOG_CHUNK + 1) {
-          const end = Math.min(start + LOG_CHUNK, latest);
-          try {
-            const logs = await publicClient.getContractEvents({
-              address: cfg.contract,
-              abi: baseBoardAbi,
-              eventName: "PlotsPurchased",
-              fromBlock: BigInt(start),
-              toBlock: BigInt(end),
-            });
-            logs.forEach((log) => {
-              const args = log.args as {
-                buyer?: `0x${string}`;
-                plotIds?: readonly bigint[];
-              };
-              if (!args.buyer || !args.plotIds) return;
-              args.plotIds.forEach((b) => mintedIds.add(Number(b)));
-              purchases.push({
-                buyer: args.buyer.toLowerCase() as `0x${string}`,
-                count: args.plotIds.length,
-                block: Number(log.blockNumber ?? 0n),
-                txHash: log.transactionHash ?? "",
-              });
-            });
-          } catch {
-            /* range rejected by RPC — skip this window, keep going */
-          }
+        // Reset the accumulator when the active contract changes.
+        const st = scanStateRef.current;
+        if (st.contract !== cfg.contract) {
+          st.contract = cfg.contract;
+          st.lastScannedBlock = 0;
+          st.purchases = [];
+          st.mintedIds = new Set();
         }
 
-        // Current ownership (accounts for resales) via chunked batch reads.
-        const all = Array.from(mintedIds);
+        // Incremental: first pass scans from the deploy block; later passes only
+        // scan the blocks added since the last successfully-scanned one.
+        const fromBlock =
+          st.lastScannedBlock > 0 ? st.lastScannedBlock + 1 : cfg.deployBlock;
+
+        let scanIncomplete = false;
+        const LOG_CHUNK = 9_500;
+        for (let start = fromBlock; start <= latest; start += LOG_CHUNK + 1) {
+          const end = Math.min(start + LOG_CHUNK, latest);
+          let ok = false;
+          // Retry a failed range up to 3 times with 500/1000/2000ms backoff
+          // before giving up on it — avoids silently dropping its purchases.
+          for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+            try {
+              const logs = await publicClient.getContractEvents({
+                address: cfg.contract,
+                abi: baseBoardAbi,
+                eventName: "PlotsPurchased",
+                fromBlock: BigInt(start),
+                toBlock: BigInt(end),
+              });
+              logs.forEach((log) => {
+                const args = log.args as {
+                  buyer?: `0x${string}`;
+                  plotIds?: readonly bigint[];
+                };
+                if (!args.buyer || !args.plotIds) return;
+                args.plotIds.forEach((b) => st.mintedIds.add(Number(b)));
+                st.purchases.push({
+                  buyer: args.buyer.toLowerCase() as `0x${string}`,
+                  count: args.plotIds.length,
+                  block: Number(log.blockNumber ?? 0n),
+                  txHash: log.transactionHash ?? "",
+                });
+              });
+              ok = true;
+            } catch {
+              if (attempt < 2)
+                await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+            }
+          }
+          // A range that failed every retry leaves a hole; flag it rather than
+          // treating the partial result as a complete history.
+          if (!ok) scanIncomplete = true;
+        }
+
+        // Advance the cursor even on a partial pass so ranges that succeeded are
+        // not re-read on the next trigger.
+        st.lastScannedBlock = latest;
+
+        // Ownership (accounts for resales) is read over the FULL accumulated id
+        // set every pass, since a resale can change ownership of an already-
+        // discovered plot id — only discovery is incremental, not this read.
+        const all = Array.from(st.mintedIds);
         const currentCounts = new Map<string, number>();
         const READ_CHUNK = 400;
         for (let i = 0; i < all.length; i += READ_CHUNK) {
@@ -534,8 +592,9 @@ export function useAllMintedPlots(): AllMintedData {
         if (!cancelled)
           setRaw({
             loading: false,
-            purchases,
+            purchases: [...st.purchases],
             counts: Array.from(currentCounts.entries()),
+            scanIncomplete,
           });
       } catch {
         if (!cancelled) setRaw((d) => ({ ...d, loading: false }));
@@ -570,5 +629,10 @@ export function useAllMintedPlots(): AllMintedData {
     [raw.purchases],
   );
 
-  return { loading: raw.loading, ranking, events };
+  return {
+    loading: raw.loading,
+    ranking,
+    events,
+    scanIncomplete: raw.scanIncomplete,
+  };
 }
