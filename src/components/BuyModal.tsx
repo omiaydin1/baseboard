@@ -18,7 +18,7 @@ import {
 import { formatEther } from "viem";
 import type { Plot } from "@/lib/types";
 
-const MAX_BUY = 400;
+const MAX_BUY = 5000;
 
 export function BuyModal() {
   const buySelection = useBoardStore((s) => s.buySelection);
