@@ -39,7 +39,8 @@ export function useBoardStats() {
   const cfg = useActiveChainConfig();
   const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
 
-  // Try Turso API cache first; fall back to direct RPC on failure.
+  // Try Turso API cache first for instant paint; RPC stays enabled in the
+  // background so every new purchase instantly updates the displayed count.
   const [cachedSold, setCachedSold] = useState<number | null>(null);
 
   useEffect(() => {
@@ -61,17 +62,19 @@ export function useBoardStats() {
 
   const tursoSold = cachedSold;
 
+  // RPC read is ALWAYS enabled: on first load Turso paints quickly, then RPC
+  // refines the value. After a purchase the PlotsPurchased watcher refetches so
+  // the counter never stalls behind the indexer.
   const { data, refetch, isLoading } = useReadContract({
     ...sharedReadConfig,
     functionName: "totalPlotsSold",
     query: {
-      enabled: cfg.isConfigured && tursoSold == null,
-      // Slow background poll (60s) to limit RPC load / credit consumption; the
-      // `PlotsPurchased` watcher below still refetches immediately on any sale.
+      enabled: cfg.isConfigured,
       refetchInterval: 60_000,
     },
   });
 
+  // Watch for any new purchase and refetch RPC immediately.
   useWatchContractEvent({
     ...sharedReadConfig,
     eventName: "PlotsPurchased",
@@ -81,10 +84,13 @@ export function useBoardStats() {
     },
   });
 
-  const sold = tursoSold ?? (cfg.isConfigured && data != null ? Number(data) : 0);
+  // Prefer the freshest on-chain value when it's available; use Turso only as an
+  // initial paint optimisation so the dashboard never reads 0 on first render.
+  const onchain = cfg.isConfigured && data != null ? Number(data) : null;
+  const sold = onchain ?? tursoSold ?? 0;
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
-  return { sold, remaining, isLoading: isLoading && tursoSold == null, refetch };
+  return { sold, remaining, isLoading: isLoading && sold === 0, refetch };
 }
 
 export function usePlot(plotId: number | null) {
@@ -789,21 +795,22 @@ export function useAllMintedPlots(): AllMintedData {
   // `loading` flip or any incidental re-render reuses the previous sorted array
   // and the leaderboard never "jumps".
   const ranking = useMemo(
-    () => (cachedData ? cachedData.ranking : buildRanking(raw.purchases, raw.counts)),
-    [cachedData, raw.purchases, raw.counts],
+    () => buildRanking(raw.purchases, raw.counts),
+    [raw.purchases, raw.counts],
   );
   const events = useMemo(
-    () =>
-      cachedData
-        ? cachedData.events
-        : [...raw.purchases].sort((a, b) => b.block - a.block).slice(0, 20),
-    [cachedData, raw.purchases],
+    () => [...raw.purchases].sort((a, b) => b.block - a.block).slice(0, 20),
+    [raw.purchases],
   );
 
+  // Use Turso cached data for instant initial paint; once the RPC scan lands
+  // (raw has data), prefer the live on-chain data over the cached snapshot.
+  const useRpc = raw.purchases.length > 0;
+
   return {
-    loading: raw.loading && !hasCache,
-    ranking,
-    events,
-    scanIncomplete: hasCache ? false : raw.scanIncomplete,
+    loading: raw.loading && !useRpc,
+    ranking: useRpc ? ranking : cachedData?.ranking ?? ranking,
+    events: useRpc ? events : cachedData?.events ?? events,
+    scanIncomplete: useRpc ? raw.scanIncomplete : false,
   };
 }

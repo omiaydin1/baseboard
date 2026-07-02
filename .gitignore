@@ -45,3 +45,5 @@ next-env.d.ts
 /hardhat-cache
 /hardhat-artifacts
 /typechain-types
+
+vercel-env.txt
