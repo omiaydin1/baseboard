@@ -39,32 +39,6 @@ export function useBoardStats() {
   const cfg = useActiveChainConfig();
   const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
 
-  // Try Turso API cache first for instant paint; RPC stays enabled in the
-  // background so every new purchase instantly updates the displayed count.
-  const [cachedSold, setCachedSold] = useState<number | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/stats")
-      .then((r) => r.json())
-      .then((data: { sold?: number | null; available?: boolean }) => {
-        if (!cancelled && data.available && data.sold != null) {
-          setCachedSold(data.sold);
-        }
-      })
-      .catch(() => {
-        /* ignore — fall through to RPC */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [cfg.contract]);
-
-  const tursoSold = cachedSold;
-
-  // RPC read is ALWAYS enabled: on first load Turso paints quickly, then RPC
-  // refines the value. After a purchase the PlotsPurchased watcher refetches so
-  // the counter never stalls behind the indexer.
   const { data, refetch, isLoading } = useReadContract({
     ...sharedReadConfig,
     functionName: "totalPlotsSold",
@@ -74,23 +48,17 @@ export function useBoardStats() {
     },
   });
 
-  // Watch for any new purchase and refetch RPC immediately.
   useWatchContractEvent({
     ...sharedReadConfig,
     eventName: "PlotsPurchased",
     enabled: cfg.isConfigured,
-    onLogs: () => {
-      void refetch();
-    },
+    onLogs: () => void refetch(),
   });
 
-  // Prefer the freshest on-chain value when it's available; use Turso only as an
-  // initial paint optimisation so the dashboard never reads 0 on first render.
-  const onchain = cfg.isConfigured && data != null ? Number(data) : null;
-  const sold = onchain ?? tursoSold ?? 0;
+  const sold = cfg.isConfigured && data != null ? Number(data) : 0;
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
-  return { sold, remaining, isLoading: isLoading && sold === 0, refetch };
+  return { sold, remaining, isLoading, refetch };
 }
 
 export function usePlot(plotId: number | null) {
