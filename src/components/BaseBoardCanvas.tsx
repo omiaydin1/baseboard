@@ -453,6 +453,14 @@ export function BaseBoardCanvas() {
           const h = (by2 - by1 + 1) * cam.scale;
 
           ctx.save();
+          // First clip to the exact zone/cell bbox to prevent any sub-pixel
+          // anti-aliasing bleed at low zoom levels.
+          ctx.beginPath();
+          ctx.rect(dx, dy, w, h);
+          ctx.clip();
+
+          // Second, clip to the individual owned cells so unowned gaps are
+          // excluded (zone path) or to the group's cells (non-zone path).
           ctx.beginPath();
           if (g.zone) {
             // Clip to the owner's loaded cells inside the zone so the image
@@ -539,6 +547,57 @@ export function BaseBoardCanvas() {
   );
 
   // -------------------------------------------------------------------
+  // Fetch helpers: try API routes first, fall back to direct RPC.
+  // -------------------------------------------------------------------
+  const fetchViewportApi = useCallback(
+    async (
+      startX: number,
+      startY: number,
+      endX: number,
+      endY: number,
+    ): Promise<boolean> => {
+      try {
+        const params = new URLSearchParams({
+          x1: String(startX),
+          y1: String(startY),
+          x2: String(endX),
+          y2: String(endY),
+        });
+        const res = await fetch(`/api/board?${params}`);
+        if (!res.ok) return false;
+        const data: Array<{
+          plotId: number;
+          owner: string;
+          price: string;
+          isForSale: boolean;
+          imageUri: string;
+        }> = await res.json();
+        const map = plotMapRef.current;
+        // Clear viewport cells first.
+        for (let y = startY; y <= endY; y++) {
+          for (let x = startX; x <= endX; x++) {
+            map.delete(plotIdFromXY(x, y));
+          }
+        }
+        data.forEach((d) => {
+          map.set(d.plotId, {
+            owner: d.owner as `0x${string}`,
+            price: BigInt(d.price),
+            isForSale: d.isForSale,
+            imageUri: d.imageUri,
+          });
+        });
+        dirtyRef.current = true;
+        forceTick((t) => t + 1);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [],
+  );
+
+  // -------------------------------------------------------------------
   // Data loading for the visible viewport (debounced on camera settle)
   // -------------------------------------------------------------------
   const loadViewport = useCallback(async () => {
@@ -554,6 +613,10 @@ export function BaseBoardCanvas() {
     const rows = endY - startY + 1;
     if (cols * rows > MAX_QUERY_CELLS) return; // too zoomed out to enumerate
 
+    // Try API route first.
+    if (await fetchViewportApi(startX, startY, endX, endY)) return;
+
+    // Fallback: direct RPC read.
     const ids: bigint[] = [];
     for (let y = startY; y <= endY; y++) {
       for (let x = startX; x <= endX; x++) {
@@ -584,7 +647,7 @@ export function BaseBoardCanvas() {
     } catch {
       /* read failed (rpc / not deployed) — keep prior data */
     }
-  }, [publicClient]);
+  }, [publicClient, fetchViewportApi]);
 
   // Debounce viewport loads.
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -603,12 +666,48 @@ export function BaseBoardCanvas() {
   const allMintedIdsRef = useRef<Set<number>>(new Set());
   const lastScanBlockRef = useRef<number>(0);
   const globalLoadingRef = useRef(false);
+  const scanIncompleteRef = useRef(false);
 
   const loadAllMinted = useCallback(async () => {
     if (!IS_CONTRACT_CONFIGURED || !publicClient) return;
     if (globalLoadingRef.current) return;
     globalLoadingRef.current = true;
     try {
+      // Try API route first.
+      let apiOk = false;
+      try {
+        const res = await fetch("/api/leaderboard");
+        if (res.ok) {
+          const data: Array<{
+            plotId: number;
+            owner: string;
+            imageUri: string;
+            isForSale: boolean;
+            price: string;
+          }> = await res.json();
+          const map = plotMapRef.current;
+          const ids = new Set<number>();
+          data.forEach((d) => {
+            map.set(d.plotId, {
+              owner: d.owner as `0x${string}`,
+              price: BigInt(d.price),
+              isForSale: d.isForSale,
+              imageUri: d.imageUri,
+            });
+            ids.add(d.plotId);
+          });
+          allMintedIdsRef.current = ids;
+          scanIncompleteRef.current = false;
+          dirtyRef.current = true;
+          forceTick((t) => t + 1);
+          apiOk = true;
+        }
+      } catch {
+        /* API unavailable — fall through to RPC */
+      }
+      if (apiOk) return;
+
+      // Fallback: direct RPC reads (with Part 1 fixes).
       const latest = Number(await publicClient.getBlockNumber());
       const from =
         lastScanBlockRef.current > 0
@@ -617,23 +716,35 @@ export function BaseBoardCanvas() {
 
       // 1) Discover newly-minted plot ids from PlotsPurchased logs (chunked to
       //    respect RPC block-range limits).
+      scanIncompleteRef.current = false;
       const LOG_CHUNK = 40_000;
       for (let start = from; start <= latest; start += LOG_CHUNK + 1) {
         const end = Math.min(start + LOG_CHUNK, latest);
-        try {
-          const logs = await publicClient.getContractEvents({
-            address: baseBoardAddress,
-            abi: baseBoardAbi,
-            eventName: "PlotsPurchased",
-            fromBlock: BigInt(start),
-            toBlock: BigInt(end),
-          });
-          logs.forEach((log) => {
-            const args = log.args as { plotIds?: readonly bigint[] };
-            args.plotIds?.forEach((b) => allMintedIdsRef.current.add(Number(b)));
-          });
-        } catch {
-          /* range rejected by RPC — skip this window, keep going */
+        let lastErr: unknown;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const logs = await publicClient.getContractEvents({
+              address: baseBoardAddress,
+              abi: baseBoardAbi,
+              eventName: "PlotsPurchased",
+              fromBlock: BigInt(start),
+              toBlock: BigInt(end),
+            });
+            (logs as Array<{ args?: { plotIds?: readonly bigint[] } }>).forEach((log) => {
+              const args = log.args ?? {};
+              args.plotIds?.forEach((b) => allMintedIdsRef.current.add(Number(b)));
+            });
+            lastErr = undefined;
+            break;
+          } catch (e) {
+            lastErr = e;
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, [500, 1000, 2000][attempt]));
+            }
+          }
+        }
+        if (lastErr) {
+          scanIncompleteRef.current = true;
         }
       }
       lastScanBlockRef.current = latest;

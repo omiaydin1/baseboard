@@ -15,3 +15,10 @@ export interface PlotWithMeta extends Plot {
 
 /** Status of a transaction lifecycle, used to drive spinners / toasts. */
 export type TxStatus = "idle" | "pending" | "confirming" | "success" | "error";
+
+/** Result shape returned by the leaderboard/board API routes. */
+export interface AllMintedData {
+  purchases: PlotWithMeta[];
+  mintedIds: number[];
+  scanIncomplete: boolean;
+}

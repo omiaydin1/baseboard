@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useAccount,
   useReadContract,
@@ -25,11 +25,30 @@ const sharedReadConfig = {
 } as const;
 
 export function useBoardStats() {
+  const [apiSold, setApiSold] = useState<number | null>(null);
+  const refreshNonce = useBoardStore((s) => s.refreshNonce);
+
+  // Fetch from API route, fall back to direct RPC.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/stats")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data && typeof data.sold === "number") {
+          setApiSold(data.sold);
+        }
+      })
+      .catch(() => {
+        /* API unavailable — rely on RPC */
+      });
+    return () => { cancelled = true; };
+  }, [refreshNonce]);
+
   const { data, refetch, isLoading } = useReadContract({
     ...sharedReadConfig,
     functionName: "totalPlotsSold",
     query: {
-      enabled: IS_CONTRACT_CONFIGURED,
+      enabled: IS_CONTRACT_CONFIGURED && apiSold === null,
       refetchInterval: 15_000,
     },
   });
@@ -43,7 +62,8 @@ export function useBoardStats() {
     },
   });
 
-  const sold = IS_CONTRACT_CONFIGURED && data != null ? Number(data) : 0;
+  const rpcSold = IS_CONTRACT_CONFIGURED && data != null ? Number(data) : 0;
+  const sold = apiSold !== null ? apiSold : rpcSold;
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
   return { sold, remaining, isLoading, refetch };

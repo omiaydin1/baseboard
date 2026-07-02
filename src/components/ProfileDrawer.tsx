@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import { useAccount, usePublicClient } from "wagmi";
 import { Spinner } from "./Spinner";
@@ -9,16 +9,69 @@ import { useBoardStore } from "@/store/useBoardStore";
 import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { baseBoardAbi, baseBoardAddress } from "@/lib/contract";
 import { IS_CONTRACT_CONFIGURED } from "@/lib/constants";
-import { shortAddress, xyFromPlotId } from "@/lib/coords";
+import { shortAddress, xyFromPlotId, plotIdFromXY } from "@/lib/coords";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   compressImageFile,
   withZone,
+  parseZone,
   type Zone,
 } from "@/lib/image";
 import type { Plot } from "@/lib/types";
 
+const CLUSTER_THRESHOLD = 20;
+
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
+
+/** Group contiguous plot ids into clusters by 4-directional adjacency. */
+function clusterize(ids: number[]): number[][] {
+  const pts = ids.map((id) => ({ id, ...xyFromPlotId(id) }));
+  const visited = new Set<number>();
+  const clusters: number[][] = [];
+
+  const dirs = [
+    { dx: -1, dy: 0 },
+    { dx: 1, dy: 0 },
+    { dx: 0, dy: -1 },
+    { dx: 0, dy: 1 },
+  ];
+
+  for (const p of pts) {
+    if (visited.has(p.id)) continue;
+    const stack = [p];
+    const cluster: number[] = [];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      if (visited.has(cur.id)) continue;
+      visited.add(cur.id);
+      cluster.push(cur.id);
+      for (const d of dirs) {
+        const nx = cur.x + d.dx;
+        const ny = cur.y + d.dy;
+          const nid = plotIdFromXY(nx, ny);
+        if (!visited.has(nid) && ids.includes(nid)) {
+          const neighbor = pts.find((pp) => pp.id === nid);
+          if (neighbor) stack.push(neighbor);
+        }
+      }
+    }
+    if (cluster.length > 0) clusters.push(cluster);
+  }
+  return clusters;
+}
+
+/** Compute the bounding box of a cluster of plot ids. */
+function clusterBBox(ids: number[]): Zone {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const id of ids) {
+    const { x, y } = xyFromPlotId(id);
+    if (x < x1) x1 = x;
+    if (y < y1) y1 = y;
+    if (x > x2) x2 = x;
+    if (y > y2) y2 = y;
+  }
+  return { x1, y1, x2, y2 };
+}
 
 /** Validate an image reference (data URI, ipfs://, or a direct image URL). */
 function validateImageRef(ref: string): string | null {
@@ -278,16 +331,39 @@ export function ProfileDrawer() {
                 </p>
               )}
 
-              {ids.map((id) => (
-                <OwnedPlotRow
-                  key={id}
-                  plotId={id}
-                  plot={details[id]}
-                  selectable={multiMode}
-                  checked={selected.includes(id)}
-                  onToggle={() => toggleSelected(id)}
-                />
-              ))}
+              {(() => {
+                const clusters = clusterize(ids);
+                const rows: React.ReactNode[] = [];
+                for (const cluster of clusters) {
+                  if (cluster.length >= CLUSTER_THRESHOLD) {
+                    const bbox = clusterBBox(cluster);
+                    const anchorId = Math.min(...cluster);
+                    rows.push(
+                      <LargeClusterRow
+                        key={`cluster-${anchorId}`}
+                        cluster={cluster}
+                        bbox={bbox}
+                        anchorPlot={details[anchorId]}
+                        multiMode={multiMode}
+                      />,
+                    );
+                  } else {
+                    for (const id of cluster) {
+                      rows.push(
+                        <OwnedPlotRow
+                          key={id}
+                          plotId={id}
+                          plot={details[id]}
+                          selectable={multiMode}
+                          checked={selected.includes(id)}
+                          onToggle={() => toggleSelected(id)}
+                        />,
+                      );
+                    }
+                  }
+                }
+                return rows;
+              })()}
             </div>
           )}
         </div>
@@ -672,6 +748,372 @@ function MultiImagePanel({
         saveLabel="Apply to selection"
         aspect={(zone.x2 - zone.x1 + 1) / (zone.y2 - zone.y1 + 1)}
       />
+    </div>
+  );
+}
+
+/** Summary row for a large cluster (>=20 plots). */
+function LargeClusterRow({
+  cluster,
+  bbox,
+  anchorPlot,
+  multiMode,
+}: {
+  cluster: number[];
+  bbox: Zone;
+  anchorPlot?: Plot;
+  multiMode: boolean;
+}) {
+  const { address } = useAccount();
+  const publicClient = usePublicClient();
+  const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
+  const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
+  const pushToast = useBoardStore((s) => s.pushToast);
+  const { writeContractAsync, status, isSuccess, error } = useBaseBoardWrite();
+
+  const [action, setAction] = useState<"none" | "list" | "price" | "image">("none");
+  const [priceInput, setPriceInput] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [pendingLabel, setPendingLabel] = useState<string | null>(null);
+  const [splitMode, setSplitMode] = useState(false);
+  const [splitConfig, setSplitConfig] = useState<{ cols: number; rows: number } | null>(null);
+
+  const busy = status === "pending" || status === "confirming";
+  const clusterArea = (bbox.x2 - bbox.x1 + 1) * (bbox.y2 - bbox.y1 + 1);
+  const anchorId = Math.min(...cluster);
+
+  useEffect(() => {
+    if (isSuccess && pendingLabel) {
+      pushToast("success", `${pendingLabel} confirmed`);
+      setPendingLabel(null);
+      setAction("none");
+    }
+  }, [isSuccess, pendingLabel, pushToast]);
+
+  const submit = async (label: string, fn: () => Promise<unknown>) => {
+    setLocalError(null);
+    setPendingLabel(label);
+    try {
+      await fn();
+      pushToast("info", `${label} submitted — waiting for confirmation…`);
+    } catch (e) {
+      setPendingLabel(null);
+      const m = friendlyTxError(e);
+      setLocalError(m);
+      pushToast("error", m);
+    }
+  };
+
+  const parsePrice = (): bigint | null => {
+    try {
+      const v = parseEther(priceInput || "0");
+      if (v <= 0n) throw new Error("zero");
+      return v;
+    } catch {
+      setLocalError("Enter a valid ETH price");
+      return null;
+    }
+  };
+
+  const bboxW = bbox.x2 - bbox.x1 + 1;
+  const bboxH = bbox.y2 - bbox.y1 + 1;
+
+  // Derive split presets that evenly divide as closely as possible.
+  const splitPresets = useMemo(() => {
+    const presets: Array<{ cols: number; rows: number; label: string }> = [];
+    if (bboxW >= 2) presets.push({ cols: 2, rows: 1, label: "2×1" });
+    if (bboxH >= 2) presets.push({ cols: 1, rows: 2, label: "1×2" });
+    if (bboxW >= 2 && bboxH >= 2) presets.push({ cols: 2, rows: 2, label: "2×2" });
+    if (bboxW >= 4) presets.push({ cols: 4, rows: 1, label: "4×1" });
+    return presets;
+  }, [bboxW, bboxH]);
+
+  const onList = () => {
+    const v = parsePrice();
+    if (v == null) return;
+    void submit("Listing", () =>
+      writeContractAsync({
+        address: baseBoardAddress,
+        abi: baseBoardAbi,
+        functionName: "listPlot",
+        args: [BigInt(anchorId), v],
+      }),
+    );
+  };
+
+  const onUpdatePrice = () => {
+    const v = parsePrice();
+    if (v == null) return;
+    void submit("Price update", () =>
+      writeContractAsync({
+        address: baseBoardAddress,
+        abi: baseBoardAbi,
+        functionName: "updatePlotPrice",
+        args: [BigInt(anchorId), v],
+      }),
+    );
+  };
+
+  const onCancel = () =>
+    void submit("Cancel listing", () =>
+      writeContractAsync({
+        address: baseBoardAddress,
+        abi: baseBoardAbi,
+        functionName: "cancelListing",
+        args: [BigInt(anchorId)],
+      }),
+    );
+
+  const onSaveImage = async (uri: string) => {
+    const problem = await preflightImageUpdate(
+      publicClient as MinimalPublicClient | undefined,
+      address,
+      anchorId,
+      uri,
+    );
+    if (problem) {
+      setLocalError(problem);
+      pushToast("error", problem);
+      return;
+    }
+    await submit("Image update", () =>
+      writeContractAsync({
+        address: baseBoardAddress,
+        abi: baseBoardAbi,
+        functionName: "updatePlotImage",
+        args: [BigInt(anchorId), uri.trim()],
+      }),
+    );
+  };
+
+  // Shared image upload for split sub-zones.
+  const [subImages, setSubImages] = useState<Record<string, string>>({});
+
+  const handleSubImage = async (subKey: string, uri: string, subZone: Zone) => {
+    const finalUri = withZone(uri, subZone);
+    const problem = await preflightImageUpdate(
+      publicClient as MinimalPublicClient | undefined,
+      address,
+      subZone.x1 + subZone.y1 * 3162,
+      finalUri,
+    );
+    if (problem) {
+      pushToast("error", problem);
+      return;
+    }
+    await submit(`Image for section ${subKey}`, () =>
+      writeContractAsync({
+        address: baseBoardAddress,
+        abi: baseBoardAbi,
+        functionName: "updatePlotImage",
+        args: [BigInt(subZone.x1 + subZone.y1 * 3162), finalUri],
+      }),
+    );
+    setSubImages((s) => ({ ...s, [subKey]: uri }));
+  };
+
+  // Compute sub-zones for current split config.
+  const subZones = useMemo<Array<{ key: string; zone: Zone }>>(() => {
+    if (!splitConfig) return [];
+    const { cols, rows } = splitConfig;
+    const cellW = bboxW / cols;
+    const cellH = bboxH / rows;
+    const zones: Array<{ key: string; zone: Zone }> = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const sx1 = bbox.x1 + Math.floor(c * cellW);
+        const sy1 = bbox.y1 + Math.floor(r * cellH);
+        const sx2 = c === cols - 1 ? bbox.x2 : bbox.x1 + Math.floor((c + 1) * cellW) - 1;
+        const sy2 = r === rows - 1 ? bbox.y2 : bbox.y1 + Math.floor((r + 1) * cellH) - 1;
+        zones.push({
+          key: `${cols}x${rows}-${c}-${r}`,
+          zone: { x1: sx1, y1: sy1, x2: sx2, y2: sy2 },
+        });
+      }
+    }
+    return zones;
+  }, [splitConfig, bboxW, bboxH, bbox]);
+
+  return (
+    <div className="rounded-xl border-2 border-base-blue/30 bg-blue-50/30 p-3">
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => {
+            setFocusPlotId(anchorId);
+            setProfileOpen(false);
+          }}
+          className="text-left"
+        >
+          <p className="font-bold text-base-blue hover:underline">
+            ({bbox.x1}–{bbox.x2}, {bbox.y1}–{bbox.y2})
+          </p>
+          <p className="text-xs text-slate-500">
+            {bboxW}×{bboxH} area · {cluster.length} pixels
+          </p>
+        </button>
+        <div className="text-right text-xs">
+          {anchorPlot?.isForSale ? (
+            <span className="rounded-full bg-green-100 px-2 py-0.5 font-semibold text-green-700">
+              Listed · {formatEther(anchorPlot.price)} ETH
+            </span>
+          ) : (
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-500">
+              Not listed
+            </span>
+          )}
+        </div>
+      </div>
+
+      {anchorPlot?.imageUri && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={previewSrc(anchorPlot.imageUri)}
+          alt="cluster"
+          className="mt-2 h-20 w-full rounded-lg border border-blue-100 object-cover"
+        />
+      )}
+
+      {/* Action buttons */}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {!anchorPlot?.isForSale ? (
+          <ActionButton
+            active={action === "list"}
+            onClick={() => setAction(action === "list" ? "none" : "list")}
+          >
+            List for Sale
+          </ActionButton>
+        ) : (
+          <>
+            <ActionButton
+              active={action === "price"}
+              onClick={() => setAction(action === "price" ? "none" : "price")}
+            >
+              Update Price
+            </ActionButton>
+            <ActionButton onClick={onCancel} variant="danger" disabled={busy}>
+              Cancel Listing
+            </ActionButton>
+          </>
+        )}
+        <ActionButton
+          active={action === "image"}
+          onClick={() => {
+            setAction(action === "image" ? "none" : "image");
+            setSplitMode(false);
+            setSplitConfig(null);
+          }}
+        >
+          {anchorPlot?.imageUri ? "Update Image" : "Upload Image"}
+        </ActionButton>
+      </div>
+
+      {/* Inline price form */}
+      {(action === "list" || action === "price") && (
+        <div className="mt-3 flex gap-2">
+          <input
+            type="number"
+            min="0"
+            step="0.00001"
+            value={priceInput}
+            onChange={(e) => setPriceInput(e.target.value)}
+            placeholder="Price in ETH"
+            className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
+          />
+          <PrimaryButton
+            onClick={action === "list" ? onList : onUpdatePrice}
+            busy={busy}
+            disabled={busy || !priceInput}
+          >
+            {action === "list" ? "List" : "Update"}
+          </PrimaryButton>
+        </div>
+      )}
+
+      {/* Inline image form */}
+      {action === "image" && (
+        <div className="mt-3 space-y-3">
+          <ImageUploader
+            initialValue={anchorPlot?.imageUri ?? ""}
+            busy={busy}
+            onSave={onSaveImage}
+            aspect={bboxW / bboxH}
+          />
+
+          {/* Split into sections */}
+          <div className="border-t border-blue-100 pt-3">
+            <button
+              type="button"
+              onClick={() => setSplitMode(!splitMode)}
+              className="rounded-lg border-2 border-base-blue px-3 py-1.5 text-xs font-semibold text-base-blue hover:bg-blue-50"
+            >
+              {splitMode ? "Hide split options" : "Split into sections"}
+            </button>
+
+            {splitMode && (
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {splitPresets.map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() =>
+                        setSplitConfig(
+                          splitConfig?.cols === p.cols && splitConfig.rows === p.rows
+                            ? null
+                            : { cols: p.cols, rows: p.rows },
+                        )
+                      }
+                      className={`rounded-lg border-2 px-2.5 py-1 text-xs font-semibold transition ${
+                        splitConfig?.cols === p.cols && splitConfig.rows === p.rows
+                          ? "border-base-blue bg-base-blue text-white"
+                          : "border-blue-200 text-base-blue hover:bg-blue-50"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                {splitConfig && (
+                  <div className="space-y-4">
+                    <p className="text-xs font-medium text-slate-500">
+                      {subZones.length} sections — upload an independent image for each:
+                    </p>
+                    {subZones.map((sz) => (
+                      <div key={sz.key} className="rounded-lg border border-blue-100 p-2">
+                        <p className="mb-1 text-xs font-semibold text-base-blue">
+                          Section ({sz.zone.x1}–{sz.zone.x2}, {sz.zone.y1}–{sz.zone.y2})
+                        </p>
+                        <ImageUploader
+                          initialValue={subImages[sz.key] ?? ""}
+                          busy={busy}
+                          onSave={(uri) => handleSubImage(sz.key, uri, sz.zone)}
+                          aspect={
+                            (sz.zone.x2 - sz.zone.x1 + 1) / (sz.zone.y2 - sz.zone.y1 + 1)
+                          }
+                          saveLabel="Upload to section"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {localError && (
+        <p className="mt-2 break-words text-xs font-medium text-red-600">
+          {localError}
+        </p>
+      )}
+      {!localError && error && status === "error" && (
+        <p className="mt-2 break-words text-xs font-medium text-red-600">
+          {friendlyTxError(error)}
+        </p>
+      )}
     </div>
   );
 }
