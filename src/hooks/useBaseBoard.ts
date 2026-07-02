@@ -39,11 +39,33 @@ export function useBoardStats() {
   const cfg = useActiveChainConfig();
   const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
 
+  // Try Turso API cache first; fall back to direct RPC on failure.
+  const [cachedSold, setCachedSold] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/stats")
+      .then((r) => r.json())
+      .then((data: { sold?: number | null; available?: boolean }) => {
+        if (!cancelled && data.available && data.sold != null) {
+          setCachedSold(data.sold);
+        }
+      })
+      .catch(() => {
+        /* ignore — fall through to RPC */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cfg.contract]);
+
+  const tursoSold = cachedSold;
+
   const { data, refetch, isLoading } = useReadContract({
     ...sharedReadConfig,
     functionName: "totalPlotsSold",
     query: {
-      enabled: cfg.isConfigured,
+      enabled: cfg.isConfigured && tursoSold == null,
       // Slow background poll (60s) to limit RPC load / credit consumption; the
       // `PlotsPurchased` watcher below still refetches immediately on any sale.
       refetchInterval: 60_000,
@@ -59,10 +81,10 @@ export function useBoardStats() {
     },
   });
 
-  const sold = cfg.isConfigured && data != null ? Number(data) : 0;
+  const sold = tursoSold ?? (cfg.isConfigured && data != null ? Number(data) : 0);
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
-  return { sold, remaining, isLoading, refetch };
+  return { sold, remaining, isLoading: isLoading && tursoSold == null, refetch };
 }
 
 export function usePlot(plotId: number | null) {
@@ -506,6 +528,34 @@ export function useAllMintedPlots(): AllMintedData {
   const publicClient = usePublicClient();
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
 
+  // Try Turso API cache first; fall back to RPC scan on failure.
+  const [cachedData, setCachedData] = useState<{
+    ranking: LeaderEntry[];
+    events: PurchaseEvent[];
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/leaderboard")
+      .then((r) => r.json())
+      .then((data: { ranking?: LeaderEntry[]; events?: PurchaseEvent[]; fromCache?: boolean }) => {
+        if (!cancelled && data.fromCache && data.ranking && data.events) {
+          setCachedData({ ranking: data.ranking, events: data.events });
+        }
+      })
+      .catch(() => {
+        /* ignore — fall through to RPC */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cfg.contract]);
+
+  // When Turso cached data is already loaded, skip the expensive RPC scan and
+  // present the cached leaderboard/ticker directly. The RPC scan still runs when
+  // the nonce bumps (user tx) or the cache wasn't reachable.
+  const hasCache = cachedData != null;
+
   // Raw, *unsorted* scan output held in state. It is replaced only when a fresh
   // on-chain batch fully resolves (a "state lock") — the derived leaderboard
   // therefore never re-orders due to incidental background re-renders, only when
@@ -739,18 +789,21 @@ export function useAllMintedPlots(): AllMintedData {
   // `loading` flip or any incidental re-render reuses the previous sorted array
   // and the leaderboard never "jumps".
   const ranking = useMemo(
-    () => buildRanking(raw.purchases, raw.counts),
-    [raw.purchases, raw.counts],
+    () => (cachedData ? cachedData.ranking : buildRanking(raw.purchases, raw.counts)),
+    [cachedData, raw.purchases, raw.counts],
   );
   const events = useMemo(
-    () => [...raw.purchases].sort((a, b) => b.block - a.block).slice(0, 20),
-    [raw.purchases],
+    () =>
+      cachedData
+        ? cachedData.events
+        : [...raw.purchases].sort((a, b) => b.block - a.block).slice(0, 20),
+    [cachedData, raw.purchases],
   );
 
   return {
-    loading: raw.loading,
+    loading: raw.loading && !hasCache,
     ranking,
     events,
-    scanIncomplete: raw.scanIncomplete,
+    scanIncomplete: hasCache ? false : raw.scanIncomplete,
   };
 }
