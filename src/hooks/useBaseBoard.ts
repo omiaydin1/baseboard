@@ -534,34 +534,6 @@ export function useAllMintedPlots(): AllMintedData {
   const publicClient = usePublicClient();
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
 
-  // Try Turso API cache first; fall back to RPC scan on failure.
-  const [cachedData, setCachedData] = useState<{
-    ranking: LeaderEntry[];
-    events: PurchaseEvent[];
-  } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/leaderboard")
-      .then((r) => r.json())
-      .then((data: { ranking?: LeaderEntry[]; events?: PurchaseEvent[]; fromCache?: boolean }) => {
-        if (!cancelled && data.fromCache && data.ranking && data.events) {
-          setCachedData({ ranking: data.ranking, events: data.events });
-        }
-      })
-      .catch(() => {
-        /* ignore — fall through to RPC */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [cfg.contract]);
-
-  // When Turso cached data is already loaded, skip the expensive RPC scan and
-  // present the cached leaderboard/ticker directly. The RPC scan still runs when
-  // the nonce bumps (user tx) or the cache wasn't reachable.
-  const hasCache = cachedData != null;
-
   // Raw, *unsorted* scan output held in state. It is replaced only when a fresh
   // on-chain batch fully resolves (a "state lock") — the derived leaderboard
   // therefore never re-orders due to incidental background re-renders, only when
@@ -803,14 +775,10 @@ export function useAllMintedPlots(): AllMintedData {
     [raw.purchases],
   );
 
-  // Use Turso cached data for instant initial paint; once the RPC scan lands
-  // (raw has data), prefer the live on-chain data over the cached snapshot.
-  const useRpc = raw.purchases.length > 0;
-
   return {
-    loading: raw.loading && !useRpc,
-    ranking: useRpc ? ranking : cachedData?.ranking ?? ranking,
-    events: useRpc ? events : cachedData?.events ?? events,
-    scanIncomplete: useRpc ? raw.scanIncomplete : false,
+    loading: raw.loading,
+    ranking,
+    events,
+    scanIncomplete: raw.scanIncomplete,
   };
 }
