@@ -552,6 +552,13 @@ export function BaseBoardCanvas() {
           const h = (by2 - by1 + 1) * cam.scale;
 
           ctx.save();
+          // First clip to the exact zone/cell bbox to prevent any sub-pixel
+          // anti-aliasing bleed at low zoom levels.
+          ctx.beginPath();
+          ctx.rect(dx, dy, w, h);
+          ctx.clip();
+
+          // Second clip to the individual owned cells (or bbox when zoomed out).
           ctx.beginPath();
           if (!preciseClip) {
             // Zoomed out: cells are sub-pixel, so a precise per-cell clip is
