@@ -341,48 +341,75 @@ export function ProfileDrawer() {
               )}
 
               {multiMode
-                ? clusterize(ids).map((cluster, ci) => {
-                    const allChecked = cluster.every((id) =>
-                      selected.includes(id),
-                    );
-                    const someChecked = cluster.some((id) =>
-                      selected.includes(id),
-                    );
-                    return (
-                      <div
-                        key={`batch-${cluster[0]}`}
-                        className="rounded-xl border-2 border-blue-100 p-2"
-                      >
-                        <label className="mb-1 flex cursor-pointer items-center gap-2 px-1 py-1 text-xs font-bold text-base-blue">
-                          <input
-                            type="checkbox"
-                            checked={allChecked}
-                            ref={(el) => {
-                              if (el)
-                                el.indeterminate = !allChecked && someChecked;
-                            }}
-                            onChange={() => toggleCluster(cluster)}
-                            className="h-4 w-4 accent-base-blue"
-                          />
-                          Batch #{ci + 1} · {cluster.length} pixel
-                          {cluster.length === 1 ? "" : "s"}
-                          {cluster.length > 1 ? " (adjacent)" : ""}
-                        </label>
-                        <div className="space-y-2">
-                          {cluster.map((id) => (
-                            <OwnedPlotRow
-                              key={id}
-                              plotId={id}
-                              plot={details[id]}
-                              selectable
-                              checked={selected.includes(id)}
-                              onToggle={() => toggleSelected(id)}
+                ? (() => {
+                    const clusters = clusterize(ids);
+                    return clusters.map((cluster, ci) => {
+                      const isLarge = cluster.length >= 20;
+                      if (isLarge) {
+                        const allChecked = cluster.every((id) =>
+                          selected.includes(id),
+                        );
+                        const bbox = clusterBBox(cluster);
+                        const anchorId = Math.min(...cluster);
+                        return (
+                          <label
+                            key={`batch-${anchorId}`}
+                            className="flex cursor-pointer items-center gap-2 rounded-xl border-2 border-base-blue/30 bg-blue-50/30 px-3 py-2 text-xs font-bold text-base-blue"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={allChecked}
+                              onChange={() => toggleCluster(cluster)}
+                              className="h-4 w-4 accent-base-blue shrink-0"
                             />
-                          ))}
+                            <span>
+                              Batch #{ci + 1} · {cluster.length} pixels ({bbox.x1}–{bbox.x2}, {bbox.y1}–{bbox.y2})
+                            </span>
+                          </label>
+                        );
+                      }
+                      const allChecked = cluster.every((id) =>
+                        selected.includes(id),
+                      );
+                      const someChecked = cluster.some((id) =>
+                        selected.includes(id),
+                      );
+                      return (
+                        <div
+                          key={`batch-${cluster[0]}`}
+                          className="rounded-xl border-2 border-blue-100 p-2"
+                        >
+                          <label className="mb-1 flex cursor-pointer items-center gap-2 px-1 py-1 text-xs font-bold text-base-blue">
+                            <input
+                              type="checkbox"
+                              checked={allChecked}
+                              ref={(el) => {
+                                if (el)
+                                  el.indeterminate = !allChecked && someChecked;
+                              }}
+                              onChange={() => toggleCluster(cluster)}
+                              className="h-4 w-4 accent-base-blue"
+                            />
+                            Batch #{ci + 1} · {cluster.length} pixel
+                            {cluster.length === 1 ? "" : "s"}
+                            {cluster.length > 1 ? " (adjacent)" : ""}
+                          </label>
+                          <div className="space-y-2">
+                            {cluster.map((id) => (
+                              <OwnedPlotRow
+                                key={id}
+                                plotId={id}
+                                plot={details[id]}
+                                selectable
+                                checked={selected.includes(id)}
+                                onToggle={() => toggleSelected(id)}
+                              />
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })
+                      );
+                    });
+                  })()
                 : (() => {
                     const CLUSTER_THRESHOLD = 20;
                     const clusters = clusterize(ids);
