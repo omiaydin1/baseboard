@@ -973,7 +973,7 @@ function LargeClusterRow({
   };
 
   const onSaveImage = async (uri: string, link?: string | null) => {
-    const finalUri = withMeta(uri.trim(), { link });
+    const finalUri = withMeta(uri.trim(), { zone: bbox, link });
     const problem = await preflightImageUpdate(
       publicClient as MinimalPublicClient | undefined,
       cfg.contract,
@@ -986,7 +986,17 @@ function LargeClusterRow({
       pushToast("error", problem);
       return;
     }
-    pendingOverrideRef.current = override({ imageUri: finalUri });
+    pendingOverrideRef.current = {
+      ...override({ imageUri: finalUri }),
+      ...Object.fromEntries(
+        cluster
+          .filter((id) => id !== anchorId)
+          .map((id) => [
+            id,
+            { owner: ZERO_ADDRESS as `0x${string}`, price: 0n, isForSale: false, imageUri: "" },
+          ]),
+      ),
+    };
     await submit("Image update", () =>
       writeContractAsync({
         address: cfg.contract,
