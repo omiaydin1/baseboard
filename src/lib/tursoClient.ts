@@ -1,5 +1,13 @@
 import type { Plot } from "./types";
 
+/** Wire format returned by /api/board — price is a decimal string (JSON-safe). */
+interface PlotWire {
+  owner: string;
+  price: string;
+  isForSale: boolean;
+  imageUri: string;
+}
+
 export interface TursoBoardResponse {
   plots: Record<number, Plot>;
   fromCache: boolean;
@@ -40,6 +48,25 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T | null
   }
 }
 
+/** Wire response from /api/board before bigint conversion. */
+interface BoardWireResponse {
+  plots: Record<number, PlotWire>;
+  fromCache: boolean;
+}
+
+function convertBoardWire(wire: BoardWireResponse): TursoBoardResponse {
+  const plots: Record<number, Plot> = {};
+  for (const [id, p] of Object.entries(wire.plots)) {
+    plots[Number(id)] = {
+      owner: p.owner as `0x${string}`,
+      price: BigInt(p.price),
+      isForSale: p.isForSale,
+      imageUri: p.imageUri,
+    };
+  }
+  return { plots, fromCache: wire.fromCache };
+}
+
 export async function fetchTursoBoard(
   ids?: number[],
   signal?: AbortSignal,
@@ -47,7 +74,9 @@ export async function fetchTursoBoard(
   const params = ids
     ? `ids=${ids.join(",")}`
     : "ids=all";
-  return fetchJson<TursoBoardResponse>(`/api/board?${params}`, signal);
+  const wire = await fetchJson<BoardWireResponse>(`/api/board?${params}`, signal);
+  if (!wire) return null;
+  return convertBoardWire(wire);
 }
 
 export async function fetchTursoLeaderboard(
