@@ -1,6 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured, getPlotBatch, getAllPlots } from "@/lib/turso";
-import type { Plot } from "@/lib/types";
+
+/**
+ * Wire format for Turso-served plot data. `price` is a decimal string because
+ * JSON cannot natively serialize BigInt; the client converts it back to BigInt.
+ */
+interface PlotWire {
+  owner: string;
+  price: string;
+  isForSale: boolean;
+  imageUri: string;
+}
+
+interface BoardResponse {
+  plots: Record<number, PlotWire>;
+  fromCache: boolean;
+}
 
 /**
  * Returns a batch of plot state from the Turso cache. Accepts a query param
@@ -48,11 +63,12 @@ export async function GET(req: NextRequest) {
       rows = await getPlotBatch(client, ids);
     }
 
-    const plots: Record<number, Plot> = {};
+    // price is a decimal string (JSON-safe); client converts to BigInt.
+    const plots: Record<number, PlotWire> = {};
     for (const row of rows) {
       plots[row.plotId] = {
-        owner: row.owner as `0x${string}`,
-        price: BigInt(row.price),
+        owner: row.owner,
+        price: row.price,
         isForSale: row.isForSale,
         imageUri: row.imageUri,
       };
@@ -68,9 +84,4 @@ export async function GET(req: NextRequest) {
       { status: 500 },
     );
   }
-}
-
-interface BoardResponse {
-  plots: Record<number, Plot>;
-  fromCache: boolean;
 }
