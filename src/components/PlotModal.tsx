@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { formatEther, parseEther } from "viem";
 import { useAccount } from "wagmi";
 import { Modal } from "./Modal";
@@ -17,6 +17,9 @@ import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi } from "@/lib/contract";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
 import { parseLink, stripZone } from "@/lib/image";
+import { ZERO_ADDRESS } from "@/lib/constants";
+import type { Plot } from "@/lib/types";
+import { fetchTursoBoard } from "@/lib/tursoClient";
 
 export function PlotModal() {
   const activePlotId = useBoardStore((s) => s.activePlotId);
@@ -25,7 +28,11 @@ export function PlotModal() {
   const { address, isConnected } = useAccount();
 
   const cfg = useActiveChainConfig();
-  const { plot, isOwned, isLoading } = usePlot(activePlotId);
+  const {
+    plot: rpcPlot,
+    isOwned: rpcOwned,
+    isLoading: rpcLoading,
+  } = usePlot(activePlotId);
   const { data: myOfferRaw } = useOffer(activePlotId, address);
   const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
 
@@ -33,20 +40,86 @@ export function PlotModal() {
   const [txError, setTxError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // ---------------------------------------------------------------------------
+  // Phase 2: Turso provisional + RPC authoritative
+  //
+  // Source-of-truth rule: RPC always wins over Turso when they conflict. Turso
+  // is a fast preview layer only — it may lag behind the chain (indexer delay).
+  // It provides instant display while RPC is in flight, but is never the final
+  // word on ownership.
+  //
+  // States:
+  //   "loading"        — both Turso and RPC are still pending. Show spinner.
+  //   "provisional"    — Turso has data, RPC hasn't resolved yet. Show Turso
+  //                      data, but NEVER label it "unowned" based on Turso alone.
+  //   "final"          — RPC has resolved. Show RPC result authoritatively.
+  // ---------------------------------------------------------------------------
+  const [tursoPlot, setTursoPlot] = useState<Plot | null | "loading">("loading");
+
+  useEffect(() => {
+    if (activePlotId == null) return;
+    setTursoPlot("loading");
+    let cancelled = false;
+    fetchTursoBoard([activePlotId]).then((res) => {
+      if (cancelled) return;
+      const p = res?.plots?.[activePlotId] ?? null;
+      setTursoPlot(p);
+    });
+    return () => { cancelled = true; };
+  }, [activePlotId]);
+
+  // RPC is considered "resolved" when it has returned data or definitively
+  // failed (isLoading turned false). We use `rpcPlot != null` as "has data".
+  const rpcHasData = rpcPlot != null;
+  const rpcDone = !rpcLoading || rpcHasData;
+  const tursoHasData = tursoPlot !== "loading" && tursoPlot !== null;
+  // Determine display phase and effective plot.
+  //   - "final": RPC has resolved. Use RPC as authoritative source.
+  //   - "provisional": RPC is still pending, Turso has data. Show Turso as
+  //     fast preview, but NEVER declare it "unowned" based on Turso alone.
+  //   - "loading": RPC is still pending, no Turso data. Show loading spinner.
+  const phase:
+    | "loading"
+    | "provisional"
+    | "final" = rpcDone
+    ? "final"
+    : tursoHasData
+      ? "provisional"
+      : "loading";
+
+  // RPC is authoritative; fall back to Turso when RPC hasn't resolved yet.
+  const effectivePlot: Plot | null = rpcHasData
+    ? rpcPlot
+    : tursoHasData
+      ? (tursoPlot as Plot)
+      : null;
+
+  // Only RPC can declare a plot truly unowned:
+  //   - If phase is "final" and RPC says unowned → show unowned.
+  //   - If phase is "provisional" and Turso says unowned → show loading/pending.
+  //   - If phase is "loading" → show loading spinner.
+  const effectiveOwned =
+    phase === "final"
+      ? rpcOwned
+      : phase === "provisional"
+        ? !!effectivePlot &&
+          effectivePlot.owner.toLowerCase() !== ZERO_ADDRESS
+        : false;
+
   const open = activePlotId != null;
   const coords = activePlotId != null ? xyFromPlotId(activePlotId) : null;
   const myOffer = (myOfferRaw as bigint | undefined) ?? 0n;
 
   // The plot's own image/link (set when this plot is the anchor of an image).
-  const ownImage = plot?.imageUri ? stripZone(plot.imageUri) : null;
-  const ownLink = plot?.imageUri ? parseLink(plot.imageUri) : null;
+  const ownImage = effectivePlot?.imageUri ? stripZone(effectivePlot.imageUri) : null;
+  const ownLink = effectivePlot?.imageUri ? parseLink(effectivePlot.imageUri) : null;
 
   // A multi-plot image lives only on its anchor plot; any other covered pixel
   // carries no metadata. Resolve the spanning image/link covering this pixel so
   // clicking ANY pixel under a batch image shows the same destination link.
-  const needCover = !!plot && !!coords && (!ownImage || !ownLink);
+  const needCover = !!effectivePlot && !!coords && (!ownImage || !ownLink);
   const covering = useCoveringImage(
-    plot?.owner,
+    effectivePlot?.owner,
     coords?.x ?? null,
     coords?.y ?? null,
     needCover,
@@ -56,7 +129,9 @@ export function PlotModal() {
   const plotLink = ownLink || covering.link;
 
   const isOwner =
-    !!plot && !!address && plot.owner.toLowerCase() === address.toLowerCase();
+    !!effectivePlot &&
+    !!address &&
+    effectivePlot.owner.toLowerCase() === address.toLowerCase();
   const busy = status === "pending" || status === "confirming";
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -75,7 +150,7 @@ export function PlotModal() {
         abi: baseBoardAbi,
         functionName: "buyListedPlot",
         args: [BigInt(activePlotId!)],
-        value: plot!.price,
+        value: effectivePlot!.price,
       }),
     );
 
@@ -169,11 +244,17 @@ export function PlotModal() {
             </p>
           </div>
 
-          {isLoading ? (
+          {phase === "loading" ? (
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <Spinner size={16} /> Loading pixel…
             </div>
-          ) : !isOwned ? (
+          ) : phase === "provisional" && !effectiveOwned ? (
+            // Turso says unowned but we haven't heard from RPC yet — never show
+            // a hard "unowned" on Turso alone. Show a pending loader instead.
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <Spinner size={16} /> Confirming ownership…
+            </div>
+          ) : !effectiveOwned ? (
             <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
               This pixel is unowned. Close and click it to buy.
             </p>
@@ -192,24 +273,24 @@ export function PlotModal() {
                 <div className="flex justify-between">
                   <dt className="text-slate-500">Owner</dt>
                   <dd className="font-mono font-semibold text-slate-800">
-                    {isOwner ? "You" : shortAddress(plot?.owner)}
+                    {isOwner ? "You" : shortAddress(effectivePlot?.owner)}
                   </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-500">Status</dt>
                   <dd className="font-semibold text-slate-800">
-                    {plot?.isForSale ? (
+                    {effectivePlot?.isForSale ? (
                       <span className="text-green-600">For sale</span>
                     ) : (
                       <span className="text-slate-500">Not for sale</span>
                     )}
                   </dd>
                 </div>
-                {plot?.isForSale && (
+                {effectivePlot?.isForSale && (
                   <div className="flex justify-between">
                     <dt className="text-slate-500">Asking price</dt>
                     <dd className="font-black text-base-blue">
-                      {formatEther(plot.price)} ETH
+                      {formatEther(effectivePlot.price)} ETH
                     </dd>
                   </div>
                 )}
@@ -280,7 +361,7 @@ export function PlotModal() {
               ) : (
                 <div className="space-y-3">
                   {/* Buy Now (only when listed) */}
-                  {plot?.isForSale && (
+                  {effectivePlot?.isForSale && (
                     <button
                       type="button"
                       onClick={onBuyNow}
@@ -293,14 +374,14 @@ export function PlotModal() {
                           className="!border-white/40 !border-t-white"
                         />
                       )}
-                      Buy Now · {plot ? formatEther(plot.price) : "0"} ETH
+                      Buy Now · {effectivePlot ? formatEther(effectivePlot.price) : "0"} ETH
                     </button>
                   )}
 
                   {/* Place / manage offer */}
                   <div className="rounded-xl border-2 border-blue-100 p-3">
                     <p className="mb-2 text-sm font-semibold text-slate-700">
-                      {plot?.isForSale
+                      {effectivePlot?.isForSale
                         ? "Or place an offer"
                         : "This plot isn't listed — place an offer"}
                     </p>

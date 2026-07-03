@@ -24,6 +24,7 @@ import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 import { resolveCoveringImage } from "@/lib/image";
 import { clearPendingTx, savePendingTx } from "@/lib/pendingTx";
+import { fetchTursoStats, fetchTursoLeaderboard } from "@/lib/tursoClient";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -55,7 +56,22 @@ export function useBoardStats() {
     onLogs: () => void refetch(),
   });
 
-  const sold = cfg.isConfigured && data != null ? Number(data) : 0;
+  // Turso-backed fast preview: seed the sold count from Turso cache while RPC
+  // is loading, so the dashboard shows real data immediately instead of "0".
+  const [tursoSold, setTursoSold] = useState<number | null>(null);
+  useEffect(() => {
+    if (!cfg.isConfigured) return;
+    let cancelled = false;
+    fetchTursoStats().then((res) => {
+      if (cancelled || !res?.available || res.sold == null) return;
+      setTursoSold(res.sold);
+    });
+    return () => { cancelled = true; };
+  }, [cfg.isConfigured]);
+
+  // RPC is authoritative: once it resolves, it overwrites the Turso seed.
+  // Until then, show Turso's cached value (or 0 if Turso wasn't available).
+  const sold = cfg.isConfigured && data != null ? Number(data) : (tursoSold ?? 0);
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
   return { sold, remaining, isLoading, refetch };
@@ -577,6 +593,29 @@ export function useAllMintedPlots(): AllMintedData {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Turso-backed fast preview: seed the leaderboard + events from Turso cache
+  // so the dashboard shows data instantly instead of waiting for the full RPC
+  // scan. When the authoritative RPC scan resolves, it overwrites this seed.
+  useEffect(() => {
+    if (!cfg.isConfigured) return;
+    let cancelled = false;
+    fetchTursoLeaderboard().then((res) => {
+      if (cancelled || !res?.fromCache) return;
+      const counts: Array<[string, number]> = res.ranking.map(
+        (e) => [e.owner.toLowerCase(), e.count] as [string, number],
+      );
+      const purchases: PurchaseEvent[] = res.events.map((e) => ({
+        buyer: e.buyer.toLowerCase() as `0x${string}`,
+        count: e.count,
+        block: e.block,
+        txHash: e.txHash,
+      }));
+      setRaw({ loading: false, purchases, counts });
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg.isConfigured]);
 
   useEffect(() => {
     if (!cfg.isConfigured || !publicClient) {

@@ -22,6 +22,7 @@ import {
 } from "@/lib/density";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
+import { fetchTursoBoard } from "@/lib/tursoClient";
 
 type Tool = "pan" | "select";
 
@@ -44,6 +45,8 @@ const LOD_FULL_MAX_GROUPS = 120;
 // When a whole billboard shrinks to roughly this few pixels on screen, paint a
 // flat dominant-colour swatch instead of scaling an image down to a dot.
 const LOD_SWATCH_PX = 4;
+const IMAGE_CACHE_MAX = 200; // max entries in imageCacheRef before LRU eviction
+const LOD_CACHE_MAX = 200;   // max entries in lodCacheRef before LRU eviction
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
 
 /**
@@ -666,6 +669,11 @@ export function BaseBoardCanvas() {
       };
       img.src = resolveUri(stripZone(uri));
       cache.set(uri, img);
+      // Evict oldest entry when over the size limit to cap memory use.
+      if (cache.size > IMAGE_CACHE_MAX) {
+        const first = cache.keys().next();
+        if (!first.done) cache.delete(first.value);
+      }
       return img;
     },
     [],
@@ -723,6 +731,11 @@ export function BaseBoardCanvas() {
 
       const entry = { thumb: canvas, dominant };
       cache.set(key, entry);
+      // Evict oldest entry when over the size limit to cap memory use.
+      if (cache.size > LOD_CACHE_MAX) {
+        const first = cache.keys().next();
+        if (!first.done) cache.delete(first.value);
+      }
       return entry;
     },
     [],
@@ -974,17 +987,45 @@ export function BaseBoardCanvas() {
     forceTick((t) => t + 1);
   }, [chainId, clearOptimisticPlots]);
 
+  // Turso-backed fast initial load: populate plotMapRef from the Turso cache
+  // while the full RPC scan is in flight, so owned plots render immediately on
+  // mount instead of waiting for the first RPC batch-read to complete.
+  useEffect(() => {
+    if (!cfg.isConfigured) return;
+    let cancelled = false;
+    (async () => {
+      const res = await fetchTursoBoard(undefined);
+      if (cancelled || !res?.fromCache) return;
+      const map = plotMapRef.current;
+      Object.entries(res.plots).forEach(([id, plot]) => {
+        map.set(Number(id), plot);
+      });
+      dirtyRef.current = true;
+      forceTick((t) => t + 1);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg.isConfigured]);
+
   // Initial global load + light polling so other users' buys/listings appear
   // without a manual refresh, at every zoom level.
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     void loadAllMinted();
-    const t = setInterval(() => void loadAllMinted(), 30_000);
-    return () => clearInterval(t);
+    pollTimerRef.current = setInterval(() => void loadAllMinted(), 30_000);
+    return () => {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
   }, [loadAllMinted]);
 
   // Re-scan after our own tx settles so changes reflect immediately.
   useEffect(() => {
     void loadAllMinted();
+    // Reset the 30s poll timer so a manual refresh doesn't double-trigger.
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = setInterval(() => void loadAllMinted(), 30_000);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshNonce]);
 

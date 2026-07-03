@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTursoClient, isTursoConfigured, getPlotBatch } from "@/lib/turso";
+import { getTursoClient, isTursoConfigured, getPlotBatch, getAllPlots } from "@/lib/turso";
 import type { Plot } from "@/lib/types";
 
 /**
@@ -9,6 +9,7 @@ import type { Plot } from "@/lib/types";
  * configured.
  *
  * GET /api/board?ids=1,2,3
+ * GET /api/board?ids=all   — returns ALL owned plots
  */
 export async function GET(req: NextRequest) {
   if (!isTursoConfigured()) {
@@ -21,26 +22,32 @@ export async function GET(req: NextRequest) {
   }
 
   const idsParam = req.nextUrl.searchParams.get("ids");
-  if (!idsParam) {
-    return NextResponse.json(
-      { error: "Missing 'ids' query param" },
-      { status: 400 },
-    );
-  }
-
-  const ids = idsParam
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map(Number)
-    .filter((n) => !isNaN(n) && n >= 0);
-
-  if (ids.length === 0) {
-    return NextResponse.json({ plots: {}, fromCache: false } satisfies BoardResponse);
-  }
 
   try {
-    const rows = await getPlotBatch(client, ids);
+    let rows: Awaited<ReturnType<typeof getPlotBatch>>;
+
+    if (idsParam === "all") {
+      rows = await getAllPlots(client);
+    } else {
+      if (!idsParam) {
+        return NextResponse.json(
+          { error: "Missing 'ids' query param" },
+          { status: 400 },
+        );
+      }
+      const ids = idsParam
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map(Number)
+        .filter((n) => !isNaN(n) && n >= 0);
+
+      if (ids.length === 0) {
+        return NextResponse.json({ plots: {}, fromCache: false } satisfies BoardResponse);
+      }
+      rows = await getPlotBatch(client, ids);
+    }
+
     const plots: Record<number, Plot> = {};
     for (const row of rows) {
       plots[row.plotId] = {
