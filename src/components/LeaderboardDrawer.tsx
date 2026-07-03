@@ -9,7 +9,7 @@ import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { type LeaderEntry } from "@/hooks/useBaseBoard";
 import { useAllMintedContext } from "@/hooks/useAllMintedContext";
 import { useBaseName } from "@/hooks/useBaseName";
-import { shortAddress } from "@/lib/coords";
+import { displayName } from "@/lib/coords";
 
 const PAGE_SIZE = 10;
 
@@ -48,7 +48,7 @@ function RankBadge({ rank }: { rank: number }) {
 /** One leaderboard row — resolves the owner's Basename, falls back to 6+6 address. */
 function LeaderRow({ entry, isMe }: { entry: LeaderEntry; isMe: boolean }) {
   const baseName = useBaseName(entry.owner);
-  const display = baseName ? shortAddress(baseName) : shortAddress(entry.owner);
+  const display = displayName(baseName, entry.owner);
 
   return (
     <li

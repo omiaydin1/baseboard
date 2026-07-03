@@ -24,7 +24,7 @@ import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
 import { resolveCoveringImage } from "@/lib/image";
 import { clearPendingTx, savePendingTx } from "@/lib/pendingTx";
-import { fetchTursoStats, fetchTursoLeaderboard } from "@/lib/tursoClient";
+import { fetchTursoLeaderboard } from "@/lib/tursoClient";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -56,22 +56,9 @@ export function useBoardStats() {
     onLogs: () => void refetch(),
   });
 
-  // Turso-backed fast preview: seed the sold count from Turso cache while RPC
-  // is loading, so the dashboard shows real data immediately instead of "0".
-  const [tursoSold, setTursoSold] = useState<number | null>(null);
-  useEffect(() => {
-    if (!cfg.isConfigured) return;
-    let cancelled = false;
-    fetchTursoStats().then((res) => {
-      if (cancelled || !res?.available || res.sold == null) return;
-      setTursoSold(res.sold);
-    });
-    return () => { cancelled = true; };
-  }, [cfg.isConfigured]);
-
-  // RPC is authoritative: once it resolves, it overwrites the Turso seed.
-  // Until then, show Turso's cached value (or 0 if Turso wasn't available).
-  const sold = cfg.isConfigured && data != null ? Number(data) : (tursoSold ?? 0);
+  // RPC is authoritative. No Turso seed here — stats animate cleanly from 0
+  // to the on-chain value without an intermediate jump from a cached count.
+  const sold = cfg.isConfigured && data != null ? Number(data) : 0;
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
   return { sold, remaining, isLoading, refetch };

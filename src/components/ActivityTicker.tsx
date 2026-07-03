@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAllMintedContext } from "@/hooks/useAllMintedContext";
 import { useBaseName } from "@/hooks/useBaseName";
-import { shortAddress } from "@/lib/coords";
+import { displayName } from "@/lib/coords";
 import type { PurchaseEvent } from "@/hooks/useBaseBoard";
 
 const ROTATE_MS = 5000;
@@ -47,7 +47,7 @@ export function ActivityTicker() {
 
 function TickerLine({ event }: { event: PurchaseEvent }) {
   const baseName = useBaseName(event.buyer);
-  const who = baseName ? shortAddress(baseName) : shortAddress(event.buyer);
+  const who = displayName(baseName, event.buyer);
   return (
     <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden whitespace-nowrap text-xs text-slate-500">
       <span className="truncate font-mono font-semibold text-slate-600">

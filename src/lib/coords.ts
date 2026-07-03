@@ -76,5 +76,27 @@ export function shortAddress(value?: string | null): string {
   return `${value.slice(0, 6)}…${value.slice(-6)}`;
 }
 
+/**
+ * Human-readable display name for a leaderboard row or activity ticker entry.
+ * Basenames (e.g. `omiaydin.base.eth`) render as first‑3‑chars + `…` + domain
+ * suffix (`omi…base.eth`). Raw hex addresses use the standard `shortAddress`
+ * format (`0x71aa…6f812b`).
+ */
+export function displayName(
+  baseName: string | null | undefined,
+  address: string | undefined | null,
+): string {
+  // Basename with dots → short‑3 format (e.g. `omiaydin.base.eth` → `omi…base.eth`)
+  if (baseName && baseName.includes(".")) {
+    const dot = baseName.indexOf(".");
+    const suffix = baseName.slice(dot + 1); // everything after first dot
+    return `${baseName.slice(0, 3)}…${suffix}`;
+  }
+  // Explicit basename but no dots → return as-is (unusual, could be a short name)
+  if (baseName) return baseName;
+  // Fall back to short hex address
+  return shortAddress(address);
+}
+
 /** @deprecated Use `shortAddress`; kept as an alias for the unified 6+6 rule. */
 export const shortAddressLong = shortAddress;
