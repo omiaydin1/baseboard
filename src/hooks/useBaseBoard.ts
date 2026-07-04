@@ -603,7 +603,13 @@ export function useAllMintedPlots(): AllMintedData {
     if (snap && (snap.purchases.length > 0 || snap.counts.length > 0)) {
       setRaw({ loading: false, purchases: snap.purchases, counts: snap.counts });
     }
-    if (snap?.basenames) seedNameCache(snap.basenames);
+    if (snap?.basenames) {
+      const filtered: Record<string, string> = {};
+      for (const [addr, name] of Object.entries(snap.basenames)) {
+        if (name != null) filtered[addr] = name;
+      }
+      if (Object.keys(filtered).length > 0) seedNameCache(filtered);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -626,14 +632,15 @@ export function useAllMintedPlots(): AllMintedData {
         txHash: e.txHash,
       }));
       // Populate basename cache from Turso so leaderboard rows resolve
-      // immediately without RPC calls.
+      // immediately without RPC calls. Only cache non-null names — null
+      // means the indexer hasn't resolved this address yet, so the client
+      // fallback (L2 resolver via Coinbase RPC proxy) should still try.
       const basenames: Record<string, string | null> = {};
       for (const e of res.ranking) {
-        if (e.baseName !== undefined) basenames[e.owner.toLowerCase()] = e.baseName;
+        if (e.baseName != null) basenames[e.owner.toLowerCase()] = e.baseName;
       }
       if (Object.keys(basenames).length > 0) {
         seedNameCache(basenames);
-        // Persist to localStorage so subsequent page loads hydrate instantly.
         const snap = loadPersistedScan(cfg.contract);
         if (snap) {
           savePersistedScan(cfg.contract, { ...snap, basenames });
@@ -765,13 +772,20 @@ export function useAllMintedPlots(): AllMintedData {
         // scan resumes from `lastScannedBlock` rather than the deploy block.
         // Preserve known basenames from the previous snapshot (they persist
         // across scan cycles since the indexer refreshes them out-of-band).
+        // Filter out null values so the client fallback still tries RPC.
         const prevSnap = loadPersistedScan(cfg.contract);
+        const filteredBasenames: Record<string, string> = {};
+        if (prevSnap?.basenames) {
+          for (const [addr, name] of Object.entries(prevSnap.basenames)) {
+            if (name != null) filteredBasenames[addr] = name;
+          }
+        }
         savePersistedScan(cfg.contract, {
           lastScannedBlock: st.lastScannedBlock,
           purchases: st.purchases,
           mintedIds: Array.from(st.mintedIds),
           counts,
-          basenames: prevSnap?.basenames,
+          basenames: filteredBasenames,
         });
 
         if (!cancelled)
