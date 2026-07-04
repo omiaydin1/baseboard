@@ -450,16 +450,18 @@ function buildRanking(
 }
 
 /**
- * Snapshot of a completed scan persisted to `sessionStorage` so a mid-session
- * page reload can hydrate the leaderboard/ticker instantly and resume the
- * incremental scan from `lastScannedBlock` instead of re-walking the full
- * history from `cfg.deployBlock`. Plain JSON — no extra state dependency.
+ * Snapshot of a completed scan persisted to `localStorage` so a mid-session
+ * page reload (or a new tab) can hydrate the leaderboard/ticker instantly and
+ * resume the incremental scan from `lastScannedBlock` instead of re-walking
+ * the full history from `cfg.deployBlock`. Plain JSON — no extra state dep.
  */
 interface PersistedScan {
   lastScannedBlock: number;
   purchases: PurchaseEvent[];
   mintedIds: number[];
   counts: Array<[string, number]>;
+  /** Unix ms when this snapshot was saved; used to show staleness. */
+  storedAt: number;
 }
 
 function scanCacheKey(contract?: string): string | null {
@@ -471,7 +473,7 @@ function loadPersistedScan(contract?: string): PersistedScan | null {
   const key = scanCacheKey(contract);
   if (!key) return null;
   try {
-    const raw = window.sessionStorage.getItem(key);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedScan;
     if (
@@ -494,9 +496,27 @@ function savePersistedScan(contract: string | undefined, snap: PersistedScan) {
   const key = scanCacheKey(contract);
   if (!key) return;
   try {
-    window.sessionStorage.setItem(key, JSON.stringify(snap));
+    window.localStorage.setItem(key, JSON.stringify({ ...snap, storedAt: Date.now() }));
   } catch {
     /* quota exceeded / serialization error — caching is best-effort, skip */
+  }
+}
+
+/**
+ * Show a human-friendly "last updated" label for the leaderboard.
+ * Returns empty string when `storedAt` is missing (first-ever scan in progress).
+ */
+export function useLeaderboardAge(): string {
+  const cfg = useActiveChainConfig();
+  try {
+    const snap = loadPersistedScan(cfg.contract);
+    if (!snap?.storedAt) return "";
+    const elapsed = Date.now() - snap.storedAt;
+    if (elapsed < 60_000) return "Just now";
+    if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+    return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  } catch {
+    return "";
   }
 }
 
@@ -581,11 +601,12 @@ export function useAllMintedPlots(): AllMintedData {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Turso-backed fast preview: seed the leaderboard + events from Turso cache
-  // so the dashboard shows data instantly instead of waiting for the full RPC
-  // scan. When the authoritative RPC scan resolves, it overwrites this seed.
+  // On first-ever visit (no localStorage cache) fetch the Turso-backed
+  // snapshot as a temporary display while the authoritative RPC scan runs.
+  // The RPC scan always overwrites this seed when it resolves.
   useEffect(() => {
     if (!cfg.isConfigured) return;
+    if (loadPersistedScan(cfg.contract)) return; // already have local cache
     let cancelled = false;
     fetchTursoLeaderboard().then((res) => {
       if (cancelled || !res?.fromCache) return;
