@@ -1,9 +1,59 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { createPublicClient, http, isAddress, toCoinType, type Address } from "viem";
-import { mainnet } from "viem/chains";
+import {
+  createPublicClient,
+  encodePacked,
+  http,
+  isAddress,
+  keccak256,
+  namehash,
+  toHex,
+  type Address,
+} from "viem";
 import { base } from "viem/chains";
+import { ONCHAINKIT_API_KEY } from "@/lib/constants";
+
+// ---------------------------------------------------------------------------
+// Basenames L2 resolver on Base Mainnet
+// ---------------------------------------------------------------------------
+
+const BASENAME_L2_RESOLVER: Address =
+  "0xC6d566A56A1aFf6508b41f6c90ff131615583BCD";
+
+const L2_RESOLVER_ABI = [
+  {
+    inputs: [{ name: "node", type: "bytes32" }],
+    name: "name",
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+/** ENSIP-11 coin type for an EVM chain: (0x80000000 | chainId), as upper hex. */
+function chainCoinType(chainId: number): string {
+  return ((0x80000000 | chainId) >>> 0).toString(16).toUpperCase();
+}
+
+/**
+ * Basenames L2 resolver expects the node computed from the ASCII hash of the
+ * hex address string (NOT the raw 20-byte hash). OnchainKit uses the same
+ * approach internally via keccak256(addressFormatted.substring(2)).
+ */
+function reverseNode(address: Address, chainId: number): `0x${string}` {
+  const addrLabel = keccak256(toHex(address.toLowerCase().slice(2)));
+  const baseReverse = namehash(`${chainCoinType(chainId)}.reverse`);
+  return keccak256(
+    encodePacked(["bytes32", "bytes32"], [baseReverse, addrLabel]),
+  );
+}
+
+/** Coinbase RPC proxy URL when the CDP API key is configured. */
+function baseRpcUrl(): string | undefined {
+  if (!ONCHAINKIT_API_KEY) return undefined;
+  return `https://api.developer.coinbase.com/rpc/v1/base/${ONCHAINKIT_API_KEY}`;
+}
 
 // ---------------------------------------------------------------------------
 // Shared, deduplicated Basename cache
@@ -26,26 +76,17 @@ function emit() {
   for (const l of listeners) l();
 }
 
-/**
- * Shared mainnet client for ENSIP-19 cross-chain name resolution. Uses the
- * default public RPC; in production a private RPC via `NEXT_PUBLIC_RPC_URL`
- * is strongly recommended for reliability.
- */
-function getEnsClient() {
-  const rpcUrl =
-    (typeof process !== "undefined" &&
-      (process.env.NEXT_PUBLIC_RPC_URL || process.env.RPC_URL)) ||
-    undefined;
+function getBaseClient() {
   return createPublicClient({
-    chain: mainnet,
-    transport: http(rpcUrl, { timeout: 10_000 }),
+    chain: base,
+    transport: http(baseRpcUrl(), { timeout: 10_000 }),
   });
 }
 
-let ensClient: ReturnType<typeof getEnsClient> | null = null;
+let sharedClient: ReturnType<typeof getBaseClient> | null = null;
 function client() {
-  if (!ensClient) ensClient = getEnsClient();
-  return ensClient;
+  if (!sharedClient) sharedClient = getBaseClient();
+  return sharedClient;
 }
 
 function scheduleRetry(key: string, entry: CacheEntry) {
@@ -61,9 +102,11 @@ function ensureResolved(key: string) {
 
   inflight.add(key);
   client()
-    .getEnsName({
-      address: key as Address,
-      coinType: toCoinType(base.id),
+    .readContract({
+      address: BASENAME_L2_RESOLVER,
+      abi: L2_RESOLVER_ABI,
+      functionName: "name",
+      args: [reverseNode(key as Address, base.id)],
     })
     .then((resolved) => {
       nameCache.set(key, {
@@ -95,6 +138,9 @@ function subscribe(cb: () => void): () => void {
   };
 }
 
+/**
+ * Seed the shared name cache with known basenames (e.g. from Turso API).
+ */
 export function seedNameCache(entries: Record<string, string | null>): void {
   const ttl = 30 * 60 * 1000;
   const now = Date.now();
@@ -113,13 +159,12 @@ export function seedNameCache(entries: Record<string, string | null>): void {
 }
 
 /**
- * Resolve a Basename (e.g. `omiaydin.base.eth`) via ENSIP-19 cross-chain
- * resolution on mainnet. Uses the shared cache so each address is fetched
- * at most once, and the result is consistent everywhere.
+ * Resolve a wallet to its Basename (e.g. `omiaydin.base.eth`) by reading the
+ * official Basenames L2 resolver directly on Base Mainnet.
  *
- * - On success: cached for 5 minutes.
- * - On error: previous name survives; null cached with short TTL; retries
- *   with exponential back-off (1 s → 2 s → … → 60 s).
+ * - CDP API key varsa Coinbase RPC proxy kullanilir (rate limit yok, hizli).
+ * - API key yoksa public RPC (mainnet.base.org) kullanilir, yavas olabilir.
+ * - Cache'lenmis deger varsa (Turso'dan seed) direkt doner, RPC cagrisi olmaz.
  */
 export function useBaseName(address?: Address): string | null {
   const key =

@@ -14,7 +14,7 @@
  *   DEPLOY_BLOCK          — block the contract was deployed at (default: 47083347)
  */
 
-import { createPublicClient, encodePacked, http, keccak256, namehash } from "viem";
+import { createPublicClient, encodePacked, http, keccak256, namehash, toHex } from "viem";
 import { base } from "viem/chains";
 import { createClient } from "@libsql/client";
 import {
@@ -60,8 +60,9 @@ function chainCoinType(chainId: number): string {
 }
 
 function reverseNode(address: string, chainId: number): `0x${string}` {
-  // keccak256 with a 0x-prefixed hex string hashes the raw 20 address bytes.
-  const addrLabel = keccak256(address.toLowerCase() as `0x${string}`);
+  // Basenames L2 resolver expects the ASCII hash of the hex address string,
+  // NOT the raw 20-byte hash. OnchainKit uses the same approach internally.
+  const addrLabel = keccak256(toHex(address.toLowerCase().slice(2)));
   const baseReverse = namehash(`${chainCoinType(chainId)}.reverse`);
   return keccak256(
     encodePacked(["bytes32", "bytes32"], [baseReverse, addrLabel]),
