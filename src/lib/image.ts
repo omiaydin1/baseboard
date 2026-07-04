@@ -375,14 +375,15 @@ export function withMeta(
 }
 
 // ---------------------------------------------------------------------------
-// Content Security Guard for pixel links
+// Content Security Guard — shared keyword/pattern list
 //
-// Block links pointing at restricted categories (pornography, drugs/narcotics,
-// alcohol, gambling/betting) or obvious phishing structures BEFORE a mint /
-// image-save transaction is initiated. Pure client-side validation.
+// Used by both the link validator (`validateLinkUrl`) and the image content
+// screener (OCR text scan). Single source of truth so the two checks never
+// drift apart.
 // ---------------------------------------------------------------------------
 
-const BLOCKED_KEYWORDS = [
+export const RESTRICTED_KEYWORDS = {
+  keywords: [
   // pornography / adult
   "porn", "xxx", "xvideos", "xhamster", "pornhub", "redtube", "youporn",
   "onlyfans", "fansly", "brazzers", "nsfw", "hentai", "camgirl", "camsite",
@@ -402,39 +403,33 @@ const BLOCKED_KEYWORDS = [
   // phishing / malware
   "phishing", "free-crypto", "airdrop-claim", "wallet-verify", "seed-phrase",
   "metamask-support", "connect-wallet-verify", "claim-reward", "double-your",
-];
-
-/**
- * Deep pattern scanners run in addition to the keyword list. These catch
- * obfuscated / inflected forms (e.g. `sexual`, `gambling`, `betting365`) and
- * tld-style adult domains that a flat substring list would miss. Each pattern
- * is matched against `hostname + pathname + search` (lower-cased).
- */
-const BLOCKED_PATTERNS: RegExp[] = [
-  // pornography / adult
-  /porn\w*/,
-  /\bx{3,}\b/,
-  /sex(?:y|ual|cam|chat|shop|tube|video|work)/,
-  /\bnudes?\b/,
-  /\bn[\W_]?s[\W_]?f[\W_]?w\b/,
-  /\b(?:milf|bdsm|fetish|camgirls?|escorts?)\b/,
-  /\.(?:xxx|porn|adult|sex|cam|tube)(?:[/:?#]|$)/,
-  // gambling / betting
-  /\b(?:gambl|bett?ing|wager|roulette|blackjack|baccarat|slots?|jackpot)\w*/,
-  /\b(?:casino|sportsbook|sportsbet)\w*/,
-  /\b\d?x?bet\b/,
-  // drugs / narcotics
-  /\b(?:cocaine|heroin|meth(?:amphetamine)?|mdma|lsd|ketamine|fentanyl|psilocybin|cannabis|marijuana|narcotics?)\b/,
-  /\bbuy[-_]?(?:weed|drugs|coke|meth)\b/,
-  // alcohol / liquor
-  /\b(?:vodka|whiske?y|tequila|liquor|moonshine|absinthe)\b/,
-  // phishing / wallet-drainer structures
-  /seed[\W_]?phrase|private[\W_]?key/,
-  /wallet[\W_]?(?:verify|validate|connect|restore|sync)/,
-  /(?:airdrop|reward|nft|crypto|eth|usdt)[\W_]?claim/,
-  /claim[\W_]?(?:airdrop|reward|free)/,
-  /free[\W_]?(?:crypto|eth|nft|mint)/,
-];
+  ],
+  patterns: [
+    // pornography / adult
+    /porn\w*/,
+    /\bx{3,}\b/,
+    /sex(?:y|ual|cam|chat|shop|tube|video|work)/,
+    /\bnudes?\b/,
+    /\bn[\W_]?s[\W_]?f[\W_]?w\b/,
+    /\b(?:milf|bdsm|fetish|camgirls?|escorts?)\b/,
+    /\.(?:xxx|porn|adult|sex|cam|tube)(?:[/:?#]|$)/,
+    // gambling / betting
+    /\b(?:gambl|bett?ing|wager|roulette|blackjack|baccarat|slots?|jackpot)\w*/,
+    /\b(?:casino|sportsbook|sportsbet)\w*/,
+    /\b\d?x?bet\b/,
+    // drugs / narcotics
+    /\b(?:cocaine|heroin|meth(?:amphetamine)?|mdma|lsd|ketamine|fentanyl|psilocybin|cannabis|marijuana|narcotics?)\b/,
+    /\bbuy[-_]?(?:weed|drugs|coke|meth)\b/,
+    // alcohol / liquor
+    /\b(?:vodka|whiske?y|tequila|liquor|moonshine|absinthe)\b/,
+    // phishing / wallet-drainer structures
+    /seed[\W_]?phrase|private[\W_]?key/,
+    /wallet[\W_]?(?:verify|validate|connect|restore|sync)/,
+    /(?:airdrop|reward|nft|crypto|eth|usdt)[\W_]?claim/,
+    /claim[\W_]?(?:airdrop|reward|free)/,
+    /free[\W_]?(?:crypto|eth|nft|mint)/,
+  ],
+};
 
 export interface UrlValidationResult {
   ok: boolean;
@@ -465,49 +460,17 @@ export function validateLinkUrl(raw: string): UrlValidationResult {
 
   const haystack =
     `${parsed.hostname}${parsed.pathname}${parsed.search}`.toLowerCase();
-  if (BLOCKED_KEYWORDS.some((kw) => haystack.includes(kw))) {
+  if (RESTRICTED_KEYWORDS.keywords.some((kw) => haystack.includes(kw))) {
     return { ok: false, reason: "blocked" };
   }
-  if (BLOCKED_PATTERNS.some((re) => re.test(haystack))) {
+  if (RESTRICTED_KEYWORDS.patterns.some((re) => re.test(haystack))) {
     return { ok: false, reason: "blocked" };
   }
 
   return { ok: true, url: parsed.toString() };
 }
 
-// ---------------------------------------------------------------------------
-// Image content moderation (lightweight, client-side)
-//
-// A full pixel-level NSFW classifier needs a model download (e.g. nsfwjs +
-// TensorFlow) which is heavy and slow. As a fast first line of defence we scan
-// the uploaded file's name for explicit anatomical / adult terms and block the
-// mint workflow before the wallet is ever invoked. Word-boundary matching keeps
-// innocent names (e.g. "essex-beach.png", "peacock.jpg") from false-positiving.
-// ---------------------------------------------------------------------------
-
-const EXPLICIT_IMAGE_PATTERNS: RegExp[] = [
-  /\b(?:penis|phallus|vagina|vulva|pussy|clitoris|genital\w*)\b/i,
-  /\b(?:boobs?|tits?|titties|nipples?|areola)\b/i,
-  /\b(?:nudes?|naked|topless|upskirt)\b/i,
-  /\bporn\w*|\bxxx\b|\bnsfw\b|hentai|rule34/i,
-  /\b(?:sexy?|sexual|erotica?|fetish|bdsm)\b/i,
-  /\b(?:dildo|cum(?:shot)?|blow[\W_]?job|hand[\W_]?job|anal|orgasm)\b/i,
-];
-
-export interface ContentValidationResult {
-  ok: boolean;
-  reason?: string;
-}
-
-/**
- * Lightweight client-side moderation for an uploaded image file. Currently
- * inspects the filename for explicit content markers; returns `ok:false` when
- * the upload should be blocked before any transaction is initiated.
- */
-export function validateImageContent(file: File): ContentValidationResult {
-  const name = (file.name || "").toLowerCase();
-  if (EXPLICIT_IMAGE_PATTERNS.some((re) => re.test(name))) {
-    return { ok: false, reason: "explicit" };
-  }
-  return { ok: true };
-}
+// NOTE: Image content screening (NSFW.js + OCR) lives in
+// src/lib/imageModeration.ts (loaded from CDN at runtime, never bundled).
+// This file keeps RESTRICTED_KEYWORDS, validateLinkUrl, and all other
+// plain-logic utilities that may legitimately be imported server-side.

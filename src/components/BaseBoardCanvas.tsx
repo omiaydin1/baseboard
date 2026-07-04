@@ -378,6 +378,38 @@ export function BaseBoardCanvas() {
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.restore();
+
+      // ---- Marquee cell-count labels ----
+      const cols = x2 - x1 + 1;
+      const rows = y2 - y1 + 1;
+      const fontSize = Math.max(11, Math.min(18, cam.scale * 0.6));
+      ctx.save();
+      ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      const labelPad = 6;
+      // Width label: centered on top edge
+      let wx = rx + rw / 2;
+      let wy = ry - labelPad;
+      if (wy < 0) wy = ry + labelPad;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.strokeText(String(cols), wx, wy);
+      ctx.fillStyle = "#0052ff";
+      ctx.fillText(String(cols), wx, wy);
+      // Height label: centered on left edge
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      let hx = rx - labelPad;
+      let hy = ry + rh / 2;
+      if (hx < 0) hx = rx + labelPad;
+      ctx.textAlign = "right";
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.strokeText(String(rows), hx, hy);
+      ctx.fillStyle = "#0052ff";
+      ctx.fillText(String(rows), hx, hy);
+      ctx.restore();
     }
 
     // ---- Basket (tap-to-add multi-select) highlights ----
