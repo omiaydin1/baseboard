@@ -12,7 +12,6 @@ import {
   type Address,
 } from "viem";
 import { base } from "viem/chains";
-import { ONCHAINKIT_API_KEY } from "@/lib/constants";
 
 // ---------------------------------------------------------------------------
 // Basenames L2 resolver on Base Mainnet
@@ -49,12 +48,6 @@ function reverseNode(address: Address, chainId: number): `0x${string}` {
   );
 }
 
-/** Coinbase RPC proxy URL when the CDP API key is configured. */
-function baseRpcUrl(): string | undefined {
-  if (!ONCHAINKIT_API_KEY) return undefined;
-  return `https://api.developer.coinbase.com/rpc/v1/base/${ONCHAINKIT_API_KEY}`;
-}
-
 // ---------------------------------------------------------------------------
 // Shared, deduplicated Basename cache
 // ---------------------------------------------------------------------------
@@ -79,7 +72,7 @@ function emit() {
 function getBaseClient() {
   return createPublicClient({
     chain: base,
-    transport: http(baseRpcUrl(), { timeout: 10_000 }),
+    transport: http("https://mainnet.base.org", { timeout: 10_000 }),
   });
 }
 
@@ -162,9 +155,9 @@ export function seedNameCache(entries: Record<string, string | null>): void {
  * Resolve a wallet to its Basename (e.g. `omiaydin.base.eth`) by reading the
  * official Basenames L2 resolver directly on Base Mainnet.
  *
- * - CDP API key varsa Coinbase RPC proxy kullanilir (rate limit yok, hizli).
- * - API key yoksa public RPC (mainnet.base.org) kullanilir, yavas olabilir.
  * - Cache'lenmis deger varsa (Turso'dan seed) direkt doner, RPC cagrisi olmaz.
+ * - Yoksa public RPC (mainnet.base.org) ile cozer, yavas olabilir.
+ * - Basariz olursa exponential backoff ile tekrar dener.
  */
 export function useBaseName(address?: Address): string | null {
   const key =
