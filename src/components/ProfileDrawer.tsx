@@ -15,11 +15,12 @@ import { useBaseName } from "@/hooks/useBaseName";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   MAX_UPLOAD_BYTES,
+  classifyImageNsfw,
   compressImageFile,
   dimForPlots,
   parseLink,
+  screenImageText,
   stripZone,
-  validateImageContent,
   validateLinkUrl,
   withMeta,
   type Zone,
@@ -1302,6 +1303,7 @@ function ImageUploader({
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [compressing, setCompressing] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   const isData = value.startsWith("data:");
 
@@ -1322,12 +1324,30 @@ function ImageUploader({
       );
       return;
     }
-    const content = validateImageContent(file);
-    if (!content.ok) {
-      setError(
-        "Explicit or restricted image content detected. Please choose a different image.",
-      );
+    // Run content screening before spending time compressing.
+    setScanning(true);
+    try {
+      const [nsfwResult, textResult] = await Promise.all([
+        classifyImageNsfw(file),
+        screenImageText(file),
+      ]);
+      if (nsfwResult.blocked) {
+        setError(
+          "Explicit or restricted image content detected. Please choose a different image.",
+        );
+        return;
+      }
+      if (textResult.blocked) {
+        setError(
+          "Restricted content detected in image. Please choose a different image.",
+        );
+        return;
+      }
+    } catch {
+      setError("Image verification failed. Please try again.");
       return;
+    } finally {
+      setScanning(false);
     }
     setCompressing(true);
     setValue("");
@@ -1355,7 +1375,7 @@ function ImageUploader({
   const validationError = validateImageRef(value);
   const linkCheck = validateLinkUrl(link);
   const ready =
-    !busy && !compressing && validationError === null && linkCheck.ok;
+    !busy && !scanning && !compressing && validationError === null && linkCheck.ok;
 
   const handleSave = async () => {
     if (validationError) {
@@ -1418,6 +1438,11 @@ function ImageUploader({
         className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
       />
 
+      {scanning && (
+        <p className="flex items-center gap-2 text-xs font-medium text-slate-500">
+          <Spinner size={13} /> Scanning image…
+        </p>
+      )}
       {compressing && (
         <p className="flex items-center gap-2 text-xs font-medium text-slate-500">
           <Spinner size={13} /> Optimizing image…
