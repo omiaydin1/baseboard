@@ -18,7 +18,9 @@ import {
 import { formatEther } from "viem";
 import type { Plot } from "@/lib/types";
 
-const MAX_BUY = 5000;
+// Protocol-enforced per-tx gas cap (EIP-7825, Base Azul) is 16,777,216 gas.
+// buyPlots costs ~68k gas/plot — max safe is 246. Set to 240 for buffer.
+const MAX_BUY = 240;
 
 export function BuyModal() {
   const buySelection = useBoardStore((s) => s.buySelection);
