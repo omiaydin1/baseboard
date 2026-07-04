@@ -1324,11 +1324,14 @@ function ImageUploader({
       return;
     }
     // Run content screening before spending time compressing.
+    // Fail-open: if the CDN-loaded libraries can't load (Turkey blocks,
+    // slow network, CDN down), we allow the upload rather than rejecting it.
+    // Only block if the scan actually runs and finds problematic content.
     setScanning(true);
     try {
       const [nsfwResult, textResult] = await Promise.all([
-        classifyImageNsfw(file),
-        screenImageText(file),
+        classifyImageNsfw(file).catch(() => ({ blocked: false })),
+        screenImageText(file).catch(() => ({ blocked: false })),
       ]);
       if (nsfwResult.blocked) {
         setError(
@@ -1342,9 +1345,6 @@ function ImageUploader({
         );
         return;
       }
-    } catch {
-      setError("Image verification failed. Please try again.");
-      return;
     } finally {
       setScanning(false);
     }
