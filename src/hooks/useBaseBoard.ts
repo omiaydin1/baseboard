@@ -25,6 +25,7 @@ import { useBoardStore } from "@/store/useBoardStore";
 import { resolveCoveringImage } from "@/lib/image";
 import { clearPendingTx, savePendingTx } from "@/lib/pendingTx";
 import { fetchTursoLeaderboard } from "@/lib/tursoClient";
+import { seedNameCache } from "./useBaseName";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -372,6 +373,8 @@ export interface LeaderEntry {
    */
   tieBreakBlock: number;
   rank: number;
+  /** Basename (e.g. "omiaydin.base.eth") if known, from Turso index cache. */
+  baseName?: string | null;
 }
 
 export interface AllMintedData {
@@ -460,6 +463,8 @@ interface PersistedScan {
   purchases: PurchaseEvent[];
   mintedIds: number[];
   counts: Array<[string, number]>;
+  /** Basenames known at scan time: address_lower -> name or null. */
+  basenames?: Record<string, string | null>;
   /** Unix ms when this snapshot was saved; used to show staleness. */
   storedAt: number;
 }
@@ -598,6 +603,7 @@ export function useAllMintedPlots(): AllMintedData {
     if (snap && (snap.purchases.length > 0 || snap.counts.length > 0)) {
       setRaw({ loading: false, purchases: snap.purchases, counts: snap.counts });
     }
+    if (snap?.basenames) seedNameCache(snap.basenames);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -619,6 +625,20 @@ export function useAllMintedPlots(): AllMintedData {
         block: e.block,
         txHash: e.txHash,
       }));
+      // Populate basename cache from Turso so leaderboard rows resolve
+      // immediately without RPC calls.
+      const basenames: Record<string, string | null> = {};
+      for (const e of res.ranking) {
+        if (e.baseName !== undefined) basenames[e.owner.toLowerCase()] = e.baseName;
+      }
+      if (Object.keys(basenames).length > 0) {
+        seedNameCache(basenames);
+        // Persist to localStorage so subsequent page loads hydrate instantly.
+        const snap = loadPersistedScan(cfg.contract);
+        if (snap) {
+          savePersistedScan(cfg.contract, { ...snap, basenames });
+        }
+      }
       setRaw({ loading: false, purchases, counts });
     });
     return () => { cancelled = true; };
@@ -743,11 +763,15 @@ export function useAllMintedPlots(): AllMintedData {
 
         // Persist the snapshot so the next reload hydrates instantly and the
         // scan resumes from `lastScannedBlock` rather than the deploy block.
+        // Preserve known basenames from the previous snapshot (they persist
+        // across scan cycles since the indexer refreshes them out-of-band).
+        const prevSnap = loadPersistedScan(cfg.contract);
         savePersistedScan(cfg.contract, {
           lastScannedBlock: st.lastScannedBlock,
           purchases: st.purchases,
           mintedIds: Array.from(st.mintedIds),
           counts,
+          basenames: prevSnap?.basenames,
         });
 
         if (!cancelled)

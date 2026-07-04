@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS purchases (
 )
 `;
 
+const BASENAMES_TABLE = `
+CREATE TABLE IF NOT EXISTS basenames (
+  address TEXT PRIMARY KEY,
+  basename TEXT,
+  updated_at INTEGER NOT NULL
+)
+`;
+
 const INDEXER_STATE_TABLE = `
 CREATE TABLE IF NOT EXISTS indexer_state (
   key TEXT PRIMARY KEY,
@@ -71,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_plots_for_sale ON plots(is_for_sale) WHERE is_for
 export async function ensureSchema(client: ReturnType<typeof createClient>): Promise<void> {
   await client.execute(PLOTS_TABLE);
   await client.execute(PURCHASES_TABLE);
+  await client.execute(BASENAMES_TABLE);
   await client.execute(INDEXER_STATE_TABLE);
   await client.execute(PURCHASES_INDEX);
   await client.execute(PLOTS_OWNER_INDEX);
@@ -126,10 +135,39 @@ export async function insertPurchase(
   });
 }
 
+export async function upsertBasename(
+  client: ReturnType<typeof createClient>,
+  address: string,
+  basename: string | null,
+  updatedAt: number,
+): Promise<void> {
+  await client.execute({
+    sql: "INSERT OR REPLACE INTO basenames (address, basename, updated_at) VALUES (?, ?, ?)",
+    args: [address.toLowerCase(), basename, updatedAt],
+  });
+}
+
+export async function getBasenames(
+  client: ReturnType<typeof createClient>,
+  addresses: string[],
+): Promise<Map<string, string | null>> {
+  if (addresses.length === 0) return new Map();
+  const placeholders = addresses.map(() => "?").join(",");
+  const rs = await client.execute({
+    sql: `SELECT address, basename FROM basenames WHERE address IN (${placeholders})`,
+    args: addresses,
+  });
+  const result = new Map<string, string | null>();
+  for (const row of rs.rows) {
+    result.set(row.address as string, (row.basename as string) ?? null);
+  }
+  return result;
+}
+
 export async function getLeaderboard(
   client: ReturnType<typeof createClient>,
   limit = 100,
-): Promise<Array<{ owner: string; count: number; tieBreakBlock: number; rank: number }>> {
+): Promise<Array<{ owner: string; count: number; tieBreakBlock: number; rank: number; baseName: string | null }>> {
   const rs = await client.execute({
     sql: `SELECT p.owner,
                  COUNT(*) AS cnt,
@@ -140,8 +178,10 @@ export async function getLeaderboard(
                      )
                    ),
                    (SELECT MIN(pp3.block_number) FROM purchases pp3 WHERE pp3.buyer = p.owner)
-                 ) AS tie_break_block
+                 ) AS tie_break_block,
+                 b.basename AS base_name
           FROM plots p
+          LEFT JOIN basenames b ON b.address = p.owner
           WHERE p.owner != '0x0000000000000000000000000000000000000000'
           GROUP BY p.owner
           ORDER BY cnt DESC, tie_break_block ASC
@@ -153,6 +193,7 @@ export async function getLeaderboard(
     count: Number(row.cnt),
     tieBreakBlock: Number(row.tie_break_block ?? Number.MAX_SAFE_INTEGER),
     rank: i + 1,
+    baseName: (row.base_name as string) ?? null,
   }));
 }
 

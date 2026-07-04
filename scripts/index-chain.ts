@@ -14,14 +14,16 @@
  *   DEPLOY_BLOCK          — block the contract was deployed at (default: 47083347)
  */
 
-import { createPublicClient, http } from "viem";
+import { createPublicClient, encodePacked, http, keccak256, namehash } from "viem";
 import { base } from "viem/chains";
 import { createClient } from "@libsql/client";
 import {
   ensureSchema,
+  getBasenames,
   getLastScannedBlock,
   setLastScannedBlock,
   upsertPlot,
+  upsertBasename,
   insertPurchase,
 } from "../src/lib/turso";
 import { baseBoardAbi } from "../src/lib/contract";
@@ -37,9 +39,33 @@ const LOG_CHUNK = 9_500;
 const BATCH_READ_CHUNK = 400;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const BASENAME_L2_RESOLVER = "0xC6d566A56A1aFf6508b41f6c90ff131615583BCD" as const;
+
+const L2_RESOLVER_ABI = [
+  {
+    inputs: [{ name: "node", type: "bytes32" }],
+    name: "name",
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
 
 function isZeroAddr(a: string): boolean {
   return a.toLowerCase() === ZERO_ADDRESS;
+}
+
+function chainCoinType(chainId: number): string {
+  return ((0x80000000 | chainId) >>> 0).toString(16).toUpperCase();
+}
+
+function reverseNode(address: string, chainId: number): `0x${string}` {
+  // keccak256 with a 0x-prefixed hex string hashes the raw 20 address bytes.
+  const addrLabel = keccak256(address.toLowerCase() as `0x${string}`);
+  const baseReverse = namehash(`${chainCoinType(chainId)}.reverse`);
+  return keccak256(
+    encodePacked(["bytes32", "bytes32"], [baseReverse, addrLabel]),
+  );
 }
 
 async function main() {
@@ -110,6 +136,7 @@ async function main() {
   }
 
   // Now read current state for all plot ids we've seen
+  const uniqueOwners = new Set<string>();
   if (seenPlotIds.size > 0) {
     const allIds = Array.from(seenPlotIds).sort((a, b) => a - b);
     const now = Math.floor(Date.now() / 1000);
@@ -133,15 +160,17 @@ async function main() {
         for (let j = 0; j < plots.length; j++) {
           const p = plots[j];
           const plotId = slice[j];
+          const owner = p.owner.toLowerCase();
           await upsertPlot(
             turso,
             plotId,
-            p.owner,
+            owner,
             p.price.toString(),
             p.isForSale,
             p.imageUri,
             now,
           );
+          if (!isZeroAddr(owner)) uniqueOwners.add(owner);
         }
         batchCount++;
       } catch (err) {
@@ -150,6 +179,48 @@ async function main() {
     }
 
     console.log(`  Updated ${allIds.length} plots in ${batchCount} batches`);
+
+    // Resolve basenames for unique owners. Skip those already in the DB to
+    // avoid re-resolving every scan cycle (the stored name is authoritative
+    // until a new scan re-encounters the owner and re-resolves).
+    if (uniqueOwners.size > 0) {
+      const existingMap = await getBasenames(turso, Array.from(uniqueOwners));
+      const toResolve = Array.from(uniqueOwners).filter(
+        (a) => !existingMap.has(a),
+      );
+      console.log(
+        `  Resolving basenames for ${toResolve.length} new owners (${existingMap.size} cached)...`,
+      );
+      const NAME_CHUNK = 10;
+      let resolved = 0;
+      for (let i = 0; i < toResolve.length; i += NAME_CHUNK) {
+        const chunk = toResolve.slice(i, i + NAME_CHUNK);
+        const results = await Promise.allSettled(
+          chunk.map(async (addr) => {
+            try {
+              const name = await publicClient.readContract({
+                address: BASENAME_L2_RESOLVER,
+                abi: L2_RESOLVER_ABI,
+                functionName: "name",
+                args: [reverseNode(addr, base.id)],
+              });
+              return { addr, name: (name as string) || null };
+            } catch {
+              return { addr, name: null as string | null };
+            }
+          }),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled") {
+            await upsertBasename(turso, r.value.addr, r.value.name, now);
+            if (r.value.name) resolved++;
+          }
+        }
+        if (i + NAME_CHUNK < toResolve.length)
+          await new Promise((r) => setTimeout(r, 500));
+      }
+      console.log(`  Basenames resolved: ${resolved}/${toResolve.length} new`);
+    }
   }
 
   await setLastScannedBlock(turso, latest);

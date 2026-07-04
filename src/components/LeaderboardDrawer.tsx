@@ -49,7 +49,7 @@ function RankBadge({ rank }: { rank: number }) {
 /** One leaderboard row — resolves the owner's Basename, falls back to 6+6 address. */
 function LeaderRow({ entry, isMe }: { entry: LeaderEntry; isMe: boolean }) {
   const baseName = useBaseName(entry.owner);
-  const display = displayName(baseName, entry.owner);
+  const display = displayName(entry.baseName ?? baseName, entry.owner);
 
   return (
     <li
