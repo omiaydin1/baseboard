@@ -18,6 +18,7 @@ export interface TursoLeaderboardEntry {
   count: number;
   tieBreakBlock: number;
   rank: number;
+  baseName?: string | null;
 }
 
 export interface TursoPurchaseEvent {

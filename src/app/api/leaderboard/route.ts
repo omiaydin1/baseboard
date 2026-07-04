@@ -31,6 +31,7 @@ export async function GET() {
       count: e.count,
       tieBreakBlock: e.tieBreakBlock,
       rank: e.rank,
+      baseName: e.baseName as string | null,
     }));
 
     const events: PurchaseEvent[] = rawEvents.map((e) => ({
