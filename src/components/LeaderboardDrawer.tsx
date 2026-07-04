@@ -9,6 +9,7 @@ import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { type LeaderEntry } from "@/hooks/useBaseBoard";
 import { useAllMintedContext } from "@/hooks/useAllMintedContext";
 import { useBaseName } from "@/hooks/useBaseName";
+import { useLeaderboardAge } from "@/hooks/useBaseBoard";
 import { displayName } from "@/lib/coords";
 
 const PAGE_SIZE = 10;
@@ -83,6 +84,7 @@ export function LeaderboardDrawer() {
   const cfg = useActiveChainConfig();
   const { address } = useAccount();
   const { loading, ranking } = useAllMintedContext();
+  const age = useLeaderboardAge();
 
   const [page, setPage] = useState(0);
   const pageCount = Math.max(1, Math.ceil(ranking.length / PAGE_SIZE));
@@ -111,7 +113,10 @@ export function LeaderboardDrawer() {
       onClose={() => setOpen(false)}
       title="Leaderboard"
       subtitle={
-        <p className="text-xs text-slate-500">Top pixel owners on {cfg.name}</p>
+        <p className="text-xs text-slate-500">
+          Top pixel owners on {cfg.name}
+          {age && <span className="ml-2 text-slate-400">· {age}</span>}
+        </p>
       }
     >
       {!cfg.isConfigured ? (

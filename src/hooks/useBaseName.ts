@@ -52,16 +52,20 @@ function reverseNode(address: Address, chainId: number): `0x${string}` {
 // ---------------------------------------------------------------------------
 // Shared, deduplicated Basename cache
 // ---------------------------------------------------------------------------
-// A single process-wide cache + one shared RPC client backs every `useBaseName`
-// call. This guarantees the SAME address always renders the SAME identity in
-// every surface (header, profile, leaderboard rows, activity ticker) — the
-// previous per-component resolution could race so the same wallet showed its
-// Basename in one place and a raw address in another. It also collapses the
-// leaderboard's many simultaneous row lookups into one request per unique
-// address, which keeps resolution off the hot path and avoids RPC throttling.
 
-/** address(lowercase) -> resolved Basename (or null once known to have none). */
-const nameCache = new Map<string, string | null>();
+interface CacheEntry {
+  name: string | null;
+  /** Unix ms when this entry expires — stale entries get retried. */
+  expiresAt: number;
+  /** Number of consecutive failures so far (for back-off). */
+  failures: number;
+}
+
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_RETRY_DELAY = 60_000; // 1 minute
+
+/** address(lowercase) -> CacheEntry */
+const nameCache = new Map<string, CacheEntry>();
 /** addresses with an in-flight lookup, so we never fetch the same one twice. */
 const inflight = new Set<string>();
 /** React subscribers notified whenever a lookup resolves. */
@@ -85,8 +89,20 @@ function getClient(): SharedClient {
   return sharedClient;
 }
 
+function scheduleRetry(key: string, entry: CacheEntry) {
+  const delay = Math.min(
+    1_000 * 2 ** entry.failures,
+    MAX_RETRY_DELAY,
+  );
+  setTimeout(() => ensureResolved(key), delay);
+}
+
 function ensureResolved(key: string) {
-  if (nameCache.has(key) || inflight.has(key)) return;
+  if (inflight.has(key)) return;
+
+  const existing = nameCache.get(key);
+  if (existing && existing.expiresAt > Date.now()) return;
+
   inflight.add(key);
   getClient()
     .readContract({
@@ -96,10 +112,23 @@ function ensureResolved(key: string) {
       args: [reverseNode(key as Address, BASE_CHAIN_ID)],
     })
     .then((resolved) => {
-      nameCache.set(key, resolved && resolved.length > 0 ? resolved : null);
+      nameCache.set(key, {
+        name: resolved && resolved.length > 0 ? resolved : null,
+        expiresAt: Date.now() + CACHE_TTL_MS,
+        failures: 0,
+      });
     })
     .catch(() => {
-      nameCache.set(key, null);
+      // On failure: keep existing entry alive for a bit, or create a
+      // short-lived null so the UI doesn't flicker, then retry later.
+      const prev = nameCache.get(key);
+      const failures = (prev?.failures ?? 0) + 1;
+      nameCache.set(key, {
+        name: prev?.name ?? null,
+        expiresAt: Date.now() + Math.min(CACHE_TTL_MS, 30_000), // short expiry
+        failures,
+      });
+      scheduleRetry(key, nameCache.get(key)!);
     })
     .finally(() => {
       inflight.delete(key);
@@ -120,6 +149,10 @@ function subscribe(cb: () => void): () => void {
  * everywhere and each address is fetched at most once. Returns null while
  * loading or when the address has no Basename, so callers fall back to the
  * short hex address.
+ *
+ * - Entries expire after 5 minutes and are re-resolved on next access.
+ * - On RPC error: the previous name (if any) survives; null is cached with a
+ *   short TTL, and a background retry is scheduled with exponential back-off.
  */
 export function useBaseName(address?: Address): string | null {
   const key =
@@ -127,7 +160,7 @@ export function useBaseName(address?: Address): string | null {
 
   const name = useSyncExternalStore(
     subscribe,
-    () => (key ? nameCache.get(key) ?? null : null),
+    () => (key ? nameCache.get(key)?.name ?? null : null),
     () => null,
   );
 
