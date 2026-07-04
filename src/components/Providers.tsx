@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { base } from "wagmi/chains";
 import { getWagmiConfig } from "@/lib/wagmi";
-import { ONCHAINKIT_API_KEY } from "@/lib/constants";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 /**
@@ -32,7 +31,6 @@ export function Providers({ children }: { children: ReactNode }) {
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <OnchainKitProvider
-          apiKey={ONCHAINKIT_API_KEY || undefined}
           chain={base}
           config={{
             appearance: {
