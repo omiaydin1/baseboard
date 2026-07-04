@@ -12,18 +12,18 @@ import { APP_LOGO_URL, APP_URL, DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./co
 const LOCAL_RPC = "http://127.0.0.1:8545";
 
 /**
- * ERC-8021 Base Builder Code attribution suffix for `bc_ztv4rk1x`.
+ * ERC-8021 Base Builder Code attribution suffix for `bc_9cu4jx2j`.
  *
  * viem appends this hex to the end of every transaction's calldata (after the
  * ABI-encoded payload). The EVM ignores trailing calldata, and our contract has
  * no `msg.data` length / raw-decode checks, so this is a safe, purely additive
  * change that credits BaseBoard's onchain volume on base.dev. Decodes to the
- * builder code: `62635f7a747634726b3178` == "bc_ztv4rk1x". Applied to Base via
+ * builder code: `62635f396375346a78326a` == "bc_9cu4jx2j". Applied to Base via
  * the `dataSuffix` in `getWagmiConfig`.
  */
-export const BASE_BUILDER_CODE = "bc_ztv4rk1x";
+export const BASE_BUILDER_CODE = "bc_9cu4jx2j";
 export const BASE_DATA_SUFFIX =
-  "0x62635f7a747634726b31780b0080218021802180218021802180218021" as const;
+  "0x62635f396375346a78326a0b0080218021802180218021802180218021" as const;
 
 /** Stable connector ids so the UI can label / guard each row explicitly. */
 export const COINBASE_WALLET_ID = "coinbaseWalletSDK";
