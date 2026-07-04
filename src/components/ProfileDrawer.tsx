@@ -15,16 +15,15 @@ import { useBaseName } from "@/hooks/useBaseName";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   MAX_UPLOAD_BYTES,
-  classifyImageNsfw,
   compressImageFile,
   dimForPlots,
   parseLink,
-  screenImageText,
   stripZone,
   validateLinkUrl,
   withMeta,
   type Zone,
 } from "@/lib/image";
+import { classifyImageNsfw, screenImageText } from "@/lib/imageModeration";
 import type { Plot } from "@/lib/types";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
