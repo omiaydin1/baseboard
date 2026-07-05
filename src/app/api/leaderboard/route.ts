@@ -13,7 +13,7 @@ export async function GET() {
     );
   }
 
-  const client = getTursoClient();
+  const client = await getTursoClient();
   if (!client) {
     return NextResponse.json(
       { ranking: [], events: [], fromCache: false } satisfies AllMintedResponse,

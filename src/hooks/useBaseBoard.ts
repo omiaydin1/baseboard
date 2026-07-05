@@ -37,6 +37,25 @@ function viemChainFor(chainId: number): Chain {
   }
 }
 
+const STORAGE_PREFIX = "baseboard:sold";
+
+function loadPersistedSold(chainId: number): number | null {
+  try {
+    const raw = localStorage.getItem(`${STORAGE_PREFIX}:${chainId}`);
+    if (raw != null) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+  } catch { /* localStorage unavailable */ }
+  return null;
+}
+
+function savePersistedSold(chainId: number, val: number): void {
+  try {
+    localStorage.setItem(`${STORAGE_PREFIX}:${chainId}`, String(val));
+  } catch { /* localStorage unavailable */ }
+}
+
 export function useBoardStats() {
   const cfg = useActiveChainConfig();
   const sharedReadConfig = { address: cfg.contract, abi: baseBoardAbi } as const;
@@ -57,9 +76,31 @@ export function useBoardStats() {
     onLogs: () => void refetch(),
   });
 
-  // RPC is authoritative. No Turso seed here — stats animate cleanly from 0
-  // to the on-chain value without an intermediate jump from a cached count.
-  const sold = cfg.isConfigured && data != null ? Number(data) : 0;
+  // Persist the last-known sold count so a refresh shows a meaningful number
+  // immediately instead of "0" until the RPC resolves.  The animated digit
+  // rolls from the persisted value to the live RPC value once it lands.
+  const [persistedSold, setPersistedSold] = useState<number | null>(() =>
+    cfg.isConfigured ? loadPersistedSold(cfg.chainId) : null,
+  );
+  useEffect(() => {
+    if (data != null) {
+      const live = Number(data);
+      setPersistedSold(live);
+      savePersistedSold(cfg.chainId, live);
+    }
+  }, [data, cfg.chainId]);
+
+  // Clear persisted value on chain switch so we never show one network's
+  // stats on another.
+  useEffect(() => {
+    if (cfg.isConfigured) {
+      setPersistedSold(loadPersistedSold(cfg.chainId));
+    }
+  }, [cfg.chainId, cfg.isConfigured]);
+
+  // Use the persisted value as hydration baseline.  Fall through to 0 when
+  // there is neither a cached value nor an RPC response.
+  const sold = data != null ? Number(data) : persistedSold ?? 0;
   const remaining = Math.max(0, DISPLAY_MAX_PLOTS - sold);
 
   return { sold, remaining, isLoading, refetch };

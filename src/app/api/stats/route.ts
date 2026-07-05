@@ -12,7 +12,7 @@ export async function GET() {
     );
   }
 
-  const client = getTursoClient();
+  const client = await getTursoClient();
   if (!client) {
     return NextResponse.json(
       { sold: null, available: false } satisfies StatsResponse,

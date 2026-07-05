@@ -36,6 +36,9 @@ const nextConfig = {
       encoding: false,
       "@react-native-async-storage/async-storage": false,
     };
+    // Suppress the ox/tempo "Critical dependency: the request of a dependency
+    // is an expression" warning from viem's optional tempo chain config.
+    config.module.exprContextCritical = false;
     return config;
   },
 };

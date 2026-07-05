@@ -42,9 +42,12 @@ const LOD_THUMB_DIM = 128; // longest side of the cached LOD thumbnail
 // Above this many on-screen image groups we always blit the cheap LOD
 // thumbnail instead of the full-resolution source, even when zoomed in.
 const LOD_FULL_MAX_GROUPS = 120;
-// When a whole billboard shrinks to roughly this few pixels on screen, paint a
-// flat dominant-colour swatch instead of scaling an image down to a dot.
-const LOD_SWATCH_PX = 4;
+// Icon-mode constants for extreme zoom-out. When an image group's on-screen
+// span is below MIN_ICON_PX its LOD thumbnail is drawn as a proportional icon
+// instead — 1×1 groups get the smallest icon, the largest visible group gets
+// the biggest — so relative sizes are preserved even at max zoom.
+const MIN_ICON_PX = 4;
+const MAX_ICON_PX = 20;
 const IMAGE_CACHE_MAX = 200; // max entries in imageCacheRef before LRU eviction
 const LOD_CACHE_MAX = 200;   // max entries in lodCacheRef before LRU eviction
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
@@ -144,6 +147,10 @@ export function BaseBoardCanvas() {
   const lodCacheRef = useRef<
     Map<string, { thumb: HTMLCanvasElement; dominant: string }>
   >(new Map());
+  // Tracks which image URIs were painted in the most recent frame.  The image
+  // and LOD caches use this to protect on-screen images from LRU eviction so
+  // panning back never shows a flash while the image re-decodes.
+  const visibleImageUrisRef = useRef<Set<string>>(new Set());
   const [, forceTick] = useState(0);
   const requestRedraw = useCallback(() => {
     dirtyRef.current = true;
@@ -360,12 +367,15 @@ export function BaseBoardCanvas() {
     }
 
     // ---- Marquee selection rectangle ----
+    // clamp the live rect to [0, GRID_SIZE-1] so the dashed selection never
+    // extends outside the board boundary during a drag (mirrors the clamping
+    // already present in onPointerUp for the final selection commit).
     const p = pointerRef.current;
     if (p.marquee) {
-      const x1 = Math.min(p.startCell.x, p.curCell.x);
-      const y1 = Math.min(p.startCell.y, p.curCell.y);
-      const x2 = Math.max(p.startCell.x, p.curCell.x);
-      const y2 = Math.max(p.startCell.y, p.curCell.y);
+      const x1 = clamp(Math.min(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
+      const y1 = clamp(Math.min(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
+      const x2 = clamp(Math.max(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
+      const y2 = clamp(Math.max(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
       const rx = cellToScreenX(x1);
       const ry = cellToScreenY(y1);
       const rw = (x2 - x1 + 1) * cam.scale;
@@ -458,6 +468,8 @@ export function BaseBoardCanvas() {
       const drawImages = true;
       const preciseClip = cam.scale >= IMAGE_MIN_SCALE;
 
+
+
       // Bucket loaded plots by `${owner}|${imageUri}`. An image reference may
       // carry a `#bb=x1,y1,x2,y2` zone fragment telling us to span a multi-plot
       // area from a single anchor plot (one transaction). Otherwise the span is
@@ -488,24 +500,27 @@ export function BaseBoardCanvas() {
         // on-screen marker size so owned / for-sale plots stay visible at any
         // zoom level — including fully zoomed out, where a single cell would
         // otherwise be sub-pixel.
-        if (visible) {
+        // Skip for cells with an image: the image draw pass paints over them
+        // completely, and a blue rect underneath can show through at certain
+        // zoom levels due to sub-pixel gaps between the fill and the clip rect.
+        if (visible && !plot.imageUri) {
           const isMine = me && plot.owner.toLowerCase() === me;
-          const sx = cellToScreenX(x);
-          const sy = cellToScreenY(y);
+          const sx = Math.floor(cellToScreenX(x));
+          const sy = Math.floor(cellToScreenY(y));
           const zoomedOut = cam.scale < IMAGE_MIN_SCALE;
-          // Enforce a minimum on-screen marker so a single plot never collapses
-          // to a sub-pixel dot when fully zoomed out, and use a stronger palette
-          // at low zoom so claimed/for-sale plots read clearly.
-          const marker = Math.max(cam.scale, zoomedOut ? 3.5 : 3);
+          // Exact pixel-aligned cell size.  Add 1 px at extreme zoom (< 0.5) so
+          // isolated owned cells aren't invisible dots; overlaps are harmless
+          // because image icons (drawn on top) are always larger.
+          const marker = Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0);
           ctx.fillStyle = plot.isForSale
             ? zoomedOut
               ? "#0052ff"
-              : "#60a5fa"
+              : "#3b82f6"
             : isMine
               ? "#1d4ed8"
               : zoomedOut
-                ? "#93c5fd"
-                : "#bfdbfe";
+                ? "#3b82f6"
+                : "#60a5fa";
           ctx.fillRect(sx, sy, marker, marker);
         }
 
@@ -559,6 +574,31 @@ export function BaseBoardCanvas() {
       // thumbnail so a dense board never stalls the frame.
       if (drawImages) {
         const manyGroups = groups.size > LOD_FULL_MAX_GROUPS;
+
+        // First pass: find the largest visible group span so icon-mode sizes
+        // scale proportionally — 1×1 groups get the smallest icon, the biggest
+        // visible group gets the largest icon.
+        let maxIconSpan = 1;
+        groups.forEach((g) => {
+          const img = getImage(g.uri);
+          if (!img || img === "error" || !img.complete || img.naturalWidth === 0)
+            return;
+          const bx1 = g.zone ? g.zone.x1 : g.x1;
+          const by1 = g.zone ? g.zone.y1 : g.y1;
+          const bx2 = g.zone ? g.zone.x2 : g.x2;
+          const by2 = g.zone ? g.zone.y2 : g.y2;
+          if (
+            bx2 < startX - 1 ||
+            bx1 > endX + 1 ||
+            by2 < startY - 1 ||
+            by1 > endY + 1
+          )
+            return;
+          const cw = bx2 - bx1 + 1;
+          const ch = by2 - by1 + 1;
+          maxIconSpan = Math.max(maxIconSpan, Math.min(cw, ch));
+        });
+
         groups.forEach((g) => {
           const img = getImage(g.uri);
           if (!img || img === "error" || !img.complete || img.naturalWidth === 0)
@@ -581,83 +621,114 @@ export function BaseBoardCanvas() {
           )
             return;
 
-          const dx = cellToScreenX(bx1);
-          const dy = cellToScreenY(by1);
-          const w = (bx2 - bx1 + 1) * cam.scale;
-          const h = (by2 - by1 + 1) * cam.scale;
+          // Floor the start and ceil the span so the image rect covers every
+          // pixel that any part of the cells touch — no sub-pixel gaps.
+          const dx = Math.floor(cellToScreenX(bx1));
+          const dy = Math.floor(cellToScreenY(by1));
+          const w = Math.ceil((bx2 - bx1 + 1) * cam.scale);
+          const h = Math.ceil((by2 - by1 + 1) * cam.scale);
 
           ctx.save();
-          // First clip to the exact zone/cell bbox to prevent any sub-pixel
-          // anti-aliasing bleed at low zoom levels.
-          ctx.beginPath();
-          ctx.rect(dx, dy, w, h);
-          ctx.clip();
 
-          // Second clip to the individual owned cells (or bbox when zoomed out).
-          ctx.beginPath();
-          if (!preciseClip) {
-            // Zoomed out: cells are sub-pixel, so a precise per-cell clip is
-            // wasted work — draw the artwork across the whole span bbox cheaply.
-            ctx.rect(dx, dy, w, h);
-          } else if (g.zone) {
-            // Clip to the owner's loaded cells inside the zone so the image
-            // never bleeds onto plots they don't own.
-            let clipped = 0;
-            map.forEach((p, id2) => {
-              if (p.owner.toLowerCase() !== g.owner) return;
-              const c = xyFromPlotId(id2);
-              if (c.x < bx1 || c.x > bx2 || c.y < by1 || c.y > by2) return;
-              ctx.rect(
-                cellToScreenX(c.x),
-                cellToScreenY(c.y),
-                cam.scale,
-                cam.scale,
-              );
-              clipped++;
-            });
-            if (clipped === 0) {
-              // The zone's cells haven't loaded yet. Drawing against the full
-              // unclipped bbox here would briefly bleed the image onto plots the
-              // owner may not actually hold (the wrong-render flash on fresh
-              // loads). Skip this group this frame and retry next frame once the
-              // cells arrive — the base owned-fill underneath keeps it non-blank.
-              ctx.restore();
-              dirtyRef.current = true;
-              return;
-            }
+          const lod = getLod(g.uri, img);
+
+          // Icon-mode preview at extreme zoom: when the whole group would be
+          // smaller than MIN_ICON_PX on screen, draw a proportionally-sized
+          // thumbnail centered on the group.  1×1 groups get the smallest icon
+          // and the largest visible group gets the biggest, preserving relative
+          // size differences.
+          if (w < MIN_ICON_PX && h < MIN_ICON_PX) {
+            const cw = bx2 - bx1 + 1;
+            const ch = by2 - by1 + 1;
+            const span = Math.min(cw, ch);
+            const t =
+              maxIconSpan > 1 ? (span - 1) / (maxIconSpan - 1) : 0;
+            const iconSize = Math.round(
+              MIN_ICON_PX + t * (MAX_ICON_PX - MIN_ICON_PX),
+            );
+            const src = lod ? lod.thumb : img;
+            ctx.drawImage(
+              src,
+              dx + (w - iconSize) / 2,
+              dy + (h - iconSize) / 2,
+              iconSize,
+              iconSize,
+            );
           } else {
-            g.cells.forEach((c) => {
-              ctx.rect(
-                cellToScreenX(c.x),
-                cellToScreenY(c.y),
-                cam.scale,
-                cam.scale,
-              );
-            });
-          }
-          ctx.clip();
-          try {
-            const lod = getLod(g.uri, img);
-            if (lod && w <= LOD_SWATCH_PX && h <= LOD_SWATCH_PX) {
-              // Billboard is only a few pixels on screen — a flat dominant
-              // colour swatch is indistinguishable from a scaled image but far
-              // cheaper. (Still non-blank at the most zoomed-out levels.)
-              ctx.fillStyle = lod.dominant;
-              ctx.fillRect(dx, dy, w, h);
+            // First clip to the exact zone/cell bbox to prevent any sub-pixel
+            // anti-aliasing bleed at low zoom levels.
+            ctx.beginPath();
+            ctx.rect(dx, dy, w, h);
+            ctx.clip();
+
+            // Second clip to the individual owned cells (or bbox when zoomed out).
+            ctx.beginPath();
+            if (!preciseClip) {
+              // Zoomed out: cells are sub-pixel, so a precise per-cell clip is
+              // wasted work — draw the artwork across the whole span bbox cheaply.
+              ctx.rect(dx, dy, w, h);
+            } else if (g.zone) {
+              // Clip to the owner's loaded cells inside the zone so the image
+              // never bleeds onto plots they don't own.
+              let clipped = 0;
+              map.forEach((p, id2) => {
+                if (p.owner.toLowerCase() !== g.owner) return;
+                const c = xyFromPlotId(id2);
+                if (c.x < bx1 || c.x > bx2 || c.y < by1 || c.y > by2) return;
+                ctx.rect(
+                  Math.floor(cellToScreenX(c.x)),
+                  Math.floor(cellToScreenY(c.y)),
+                  Math.ceil(cam.scale),
+                  Math.ceil(cam.scale),
+                );
+                clipped++;
+              });
+              if (clipped === 0) {
+                // The zone's cells haven't loaded yet. Drawing against the full
+                // unclipped bbox here would briefly bleed the image onto plots the
+                // owner may not actually hold (the wrong-render flash on fresh
+                // loads). Skip this group this frame and retry next frame once the
+                // cells arrive — the base owned-fill underneath keeps it non-blank.
+                ctx.restore();
+                dirtyRef.current = true;
+                return;
+              }
             } else {
-              // Stretch (object-fit: fill) the source across the span, scaling
-              // X and Y independently to exactly fill the zone — no letterbox,
-              // no crop. Use the full image only when zoomed in with few groups;
-              // otherwise blit the cached low-res thumbnail for performance.
+              g.cells.forEach((c) => {
+                ctx.rect(
+                  Math.floor(cellToScreenX(c.x)),
+                  Math.floor(cellToScreenY(c.y)),
+                  Math.ceil(cam.scale),
+                  Math.ceil(cam.scale),
+                );
+              });
+            }
+            ctx.clip();
+            try {
               const useFull = preciseClip && !manyGroups;
               const src = useFull || !lod ? img : lod.thumb;
               ctx.drawImage(src, dx, dy, w, h);
+            } catch {
+              /* tainted/broken image — fill already drawn underneath */
             }
-          } catch {
-            /* tainted/broken image — fill already drawn underneath */
           }
           ctx.restore();
         });
+      }
+
+      // Persist the set of image URIs that were painted this frame so the
+      // image and LOD caches can skip evicting on-screen images.
+      {
+        const nextUris = new Set<string>();
+        groups.forEach((g) => {
+          const bx1 = g.zone ? g.zone.x1 : g.x1;
+          const by1 = g.zone ? g.zone.y1 : g.y1;
+          const bx2 = g.zone ? g.zone.x2 : g.x2;
+          const by2 = g.zone ? g.zone.y2 : g.y2;
+          if (bx2 < startX - 1 || bx1 > endX + 1 || by2 < startY - 1 || by1 > endY + 1) return;
+          nextUris.add(g.uri);
+        });
+        visibleImageUrisRef.current = nextUris;
       }
 
       // "For sale" markers when zoomed in.
@@ -701,10 +772,16 @@ export function BaseBoardCanvas() {
       };
       img.src = resolveUri(stripZone(uri));
       cache.set(uri, img);
-      // Evict oldest entry when over the size limit to cap memory use.
+      // Evict oldest non-visible entry when over the size limit so on-screen
+      // images are never purged and re-decoded mid-pan.
       if (cache.size > IMAGE_CACHE_MAX) {
-        const first = cache.keys().next();
-        if (!first.done) cache.delete(first.value);
+        const visible = visibleImageUrisRef.current;
+        for (const key of cache.keys()) {
+          if (!visible.has(key)) {
+            cache.delete(key);
+            break;
+          }
+        }
       }
       return img;
     },
@@ -763,10 +840,17 @@ export function BaseBoardCanvas() {
 
       const entry = { thumb: canvas, dominant };
       cache.set(key, entry);
-      // Evict oldest entry when over the size limit to cap memory use.
+      // Evict oldest non-visible LOD entry so off-screen images' previews are
+      // reclaimed while on-screen ones stay hot.  Uses the same visible-URI set
+      // as the image cache, keyed by the zone-stripped content address.
       if (cache.size > LOD_CACHE_MAX) {
-        const first = cache.keys().next();
-        if (!first.done) cache.delete(first.value);
+        const visible = visibleImageUrisRef.current;
+        for (const k of cache.keys()) {
+          if (!visible.has(k)) {
+            cache.delete(k);
+            break;
+          }
+        }
       }
       return entry;
     },
@@ -918,6 +1002,8 @@ export function BaseBoardCanvas() {
   const loadAllMinted = useCallback(async () => {
     if (!cfg.isConfigured || !publicClient) return;
     if (globalLoadingRef.current) return;
+    const loadAllLabel = `loadAllMinted: known=${allMintedIdsRef.current.size}`;
+    console.time(loadAllLabel);
     globalLoadingRef.current = true;
     try {
       const latest = Number(await publicClient.getBlockNumber());
@@ -991,9 +1077,11 @@ export function BaseBoardCanvas() {
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     } catch {
+      console.timeEnd(loadAllLabel);
       /* rpc unavailable — keep whatever we have */
     } finally {
       globalLoadingRef.current = false;
+      console.timeEnd(loadAllLabel);
     }
   }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity]);
 
@@ -1014,6 +1102,7 @@ export function BaseBoardCanvas() {
     densityCanvasRef.current = null;
     imageCacheRef.current.clear();
     lodCacheRef.current.clear();
+    visibleImageUrisRef.current.clear();
     clearOptimisticPlots();
     dirtyRef.current = true;
     forceTick((t) => t + 1);
