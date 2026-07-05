@@ -1138,11 +1138,17 @@ export function BaseBoardCanvas() {
               args: [slice.map((n) => BigInt(n))],
             }),
           )) as readonly Plot[];
+          const fresh: Record<number, Plot> = {};
           res.forEach((plot, j) => {
             const id = slice[j];
-            if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
-            else map.delete(id);
+            if (plot.owner.toLowerCase() !== ZERO_ADDRESS) {
+              map.set(id, plot);
+              fresh[id] = plot;
+            } else {
+              map.delete(id);
+            }
           });
+          preloadImages(fresh);
           dirtyRef.current = true;
           forceTick((t) => t + 1);
         } catch { /* keep prior data */ }
@@ -1152,7 +1158,7 @@ export function BaseBoardCanvas() {
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     } catch { /* RPC unavailable */ }
-  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity]);
+  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity, preloadImages]);
 
   // Staleness counter: updates every 15s so the indicator stays current.
   useEffect(() => {
