@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { createPublicClient, http, isAddress, toCoinType, type Address } from "viem";
-import { mainnet, base } from "viem/chains";
+import { isAddress, type Address } from "viem";
 
 // ---------------------------------------------------------------------------
-// Shared, deduplicated Basename cache
+// Shared, deduplicated Basename cache (populated exclusively from Turso
+// indexer — no RPC calls, no CCIP-read gateways, no API keys).
 // ---------------------------------------------------------------------------
 
 interface CacheEntry {
@@ -16,67 +16,10 @@ interface CacheEntry {
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
 const nameCache = new Map<string, CacheEntry>();
-const inflight = new Set<string>();
 const listeners = new Set<() => void>();
 
 function emit() {
   for (const l of listeners) l();
-}
-
-// Dedicated viem client for Basenames resolution on Ethereum mainnet.
-// Uses ENSIP-19 cross-chain resolution: the L1Resolver reads state proofs
-// from Base to resolve *.base.eth names without a CCIP-read gateway.
-let _resolverClient: ReturnType<typeof createPublicClient> | null = null;
-
-function getResolverClient() {
-  if (!_resolverClient) {
-    _resolverClient = createPublicClient({
-      chain: mainnet,
-      transport: http("https://rpc.ankr.com/eth"),
-    });
-  }
-  return _resolverClient;
-}
-
-async function resolveBasename(address: Address): Promise<string | null> {
-  try {
-    const client = getResolverClient();
-    const name = await client.getEnsName({
-      address,
-      coinType: toCoinType(base.id),
-    });
-    return name;
-  } catch {
-    return null;
-  }
-}
-
-function ensureResolved(key: string) {
-  if (inflight.has(key)) return;
-
-  const existing = nameCache.get(key);
-  if (existing && existing.expiresAt > Date.now()) return;
-
-  inflight.add(key);
-
-  resolveBasename(key as Address)
-    .then((name) => {
-      nameCache.set(key, {
-        name: name ?? null,
-        expiresAt: Date.now() + CACHE_TTL_MS,
-      });
-    })
-    .catch(() => {
-      const prev = nameCache.get(key);
-      nameCache.set(key, {
-        name: prev?.name ?? null,
-        expiresAt: Date.now() + 30_000,
-      });
-    })
-    .finally(() => {
-      inflight.delete(key);
-      emit();
-    });
 }
 
 function subscribe(cb: () => void): () => void {
@@ -86,7 +29,6 @@ function subscribe(cb: () => void): () => void {
 
 /**
  * Seed the shared name cache with known basenames (e.g. from Turso API).
- * Seeds get a longer TTL (30 min) since they come from a trusted indexer.
  */
 export function seedNameCache(entries: Record<string, string | null>): void {
   const now = Date.now();
@@ -103,55 +45,32 @@ export function seedNameCache(entries: Record<string, string | null>): void {
 }
 
 /**
- * Batch-resolve basenames for multiple addresses using the Basenames L2
- * Universal Resolver (viem, no OnchainKit dependency). Seeds results into
- * the shared cache so individual `useBaseName` calls hit the cache.
+ * Batch-resolve basenames — returns cached values only; never makes RPC
+ * calls. Addresses not yet cached by the Turso indexer return null.
  */
 export async function resolveBaseNamesBatch(
   addresses: Address[],
 ): Promise<Map<string, string | null>> {
-  if (addresses.length === 0) return new Map();
-
-  const unique = [...new Set(addresses.map((a) => a.toLowerCase() as Address))];
-  const now = Date.now();
-
-  // Check which addresses are already cached with valid entries
-  const uncached: Address[] = [];
-  for (const addr of unique) {
-    const existing = nameCache.get(addr);
-    if (!existing || existing.expiresAt <= now) uncached.push(addr);
-  }
-
-  // Resolve uncached addresses (in parallel, individually)
-  if (uncached.length > 0) {
-    const results: Array<{ status: string; value?: string | null }> = await Promise.allSettled(
-      uncached.map((addr) => resolveBasename(addr)),
-    );
-    for (let i = 0; i < uncached.length; i++) {
-      const r = results[i];
-      const name = r.status === "fulfilled" ? r.value ?? null : null;
-      nameCache.set(uncached[i], {
-        name: name ?? null,
-        expiresAt: now + CACHE_TTL_MS,
-      });
-    }
-    emit();
-  }
-
-  // Return current cache state for all requested addresses
   const result = new Map<string, string | null>();
-  for (const addr of unique) {
-    result.set(addr, nameCache.get(addr)?.name ?? null);
+  const now = Date.now();
+  for (const addr of addresses) {
+    const key = addr.toLowerCase();
+    const entry = nameCache.get(key);
+    if (entry && entry.expiresAt > now) {
+      result.set(key, entry.name);
+    } else {
+      result.set(key, null);
+    }
   }
   return result;
 }
 
 /**
- * Resolve a wallet address to its Basename (e.g. `omiaydin.base.eth`).
+ * Resolve a wallet address to its Basename.
  *
- * Uses a two-tier approach:
- *  1. Shared in-memory cache (populated from Turso indexer or prior resolutions)
- *  2. On-chain resolution via Basenames L2 Universal Resolver
+ * Uses cache only — no RPC calls. Names are populated by the Turso indexer
+ * via `seedNameCache`. Uncached addresses return null (shown as truncated
+ * hex addresses in the UI).
  */
 export function useBaseName(address?: Address): string | null {
   const key =
@@ -164,7 +83,13 @@ export function useBaseName(address?: Address): string | null {
   );
 
   useEffect(() => {
-    if (key) ensureResolved(key);
+    if (key) {
+      const existing = nameCache.get(key);
+      if (!existing || existing.expiresAt <= Date.now()) {
+        nameCache.set(key, { name: null, expiresAt: Date.now() + CACHE_TTL_MS });
+        emit();
+      }
+    }
   }, [key]);
 
   return name;
