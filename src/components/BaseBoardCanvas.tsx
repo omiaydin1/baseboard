@@ -37,6 +37,7 @@ const MAX_SCALE = 48;
 const GRID_FADE_START = 4; // px/cell where grid lines begin to appear
 const GRID_FADE_FULL = 12; // px/cell where grid lines are fully opaque
 const IMAGE_MIN_SCALE = 6; // px/cell before images are drawn
+const RPC_FALLBACK_INITIAL_WINDOW = 100_000; // blocks (≈1-2 weeks) on first RPC scan
 const LOD_THUMB_DIM = 128; // longest side of the cached LOD thumbnail
 // Above this many on-screen image groups we always blit the cheap LOD
 // thumbnail instead of the full-resolution source, even when zoomed in.
@@ -896,6 +897,29 @@ export function BaseBoardCanvas() {
     [],
   );
 
+  /**
+   * Pre-decode images into the shared cache so the render loop never waits
+   * for a lazy load. Called after every Turso fetch so new images are ready
+   * on the very first frame they appear.
+   */
+  const preloadImages = useCallback(
+    (plots: Record<number, { imageUri: string }>) => {
+      const cache = imageCacheRef.current;
+      for (const plot of Object.values(plots)) {
+        if (!plot.imageUri) continue;
+        const key = plot.imageUri;
+        if (cache.has(key)) continue;
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => { dirtyRef.current = true; };
+        img.onerror = () => { cache.set(key, "error"); };
+        img.src = resolveUri(stripZone(key));
+        cache.set(key, img);
+      }
+    },
+    [],
+  );
+
   // -------------------------------------------------------------------
   // Purchase-density overlay state (Part 10.2)
 
@@ -1039,6 +1063,8 @@ export function BaseBoardCanvas() {
     setStalenessSec(0);
     // Seed the known-minted set from Turso data so rpcFallback can refresh them.
     Object.keys(res.plots).forEach((id) => allMintedRef.current.add(Number(id)));
+    // Pre-decode all images so the render loop never waits for a lazy load.
+    preloadImages(res.plots);
     dirtyRef.current = true;
     forceTick((t) => t + 1);
   }, [cfg.isConfigured]);
@@ -1050,14 +1076,20 @@ export function BaseBoardCanvas() {
   // RPC fallback: scan PlotsPurchased logs to discover minted plot IDs, then
   // batch-read their current on-chain state. Called on mount (after Turso
   // fetch) and when Turso data is >5 min stale.
+  //
+  // On the FIRST call we only scan the most recent RPC_FALLBACK_INITIAL_WINDOW
+  // blocks (≈1-2 weeks) so the board is interactive in seconds instead of
+  // waiting for a full multi-million-block scan.  The 15-second staleness
+  // interval forwards the cursor from there, catching the remaining history in
+  // the background.
   const rpcFallback = useCallback(async () => {
     if (!publicClient || !cfg.isConfigured) return;
     try {
       const latest = Number(await publicClient.getBlockNumber());
-      const fromBlock =
-        lastRpcFallbackBlockRef.current > 0
-          ? lastRpcFallbackBlockRef.current + 1
-          : cfg.deployBlock;
+      const firstRun = lastRpcFallbackBlockRef.current === 0;
+      let fromBlock = firstRun
+        ? Math.max(cfg.deployBlock, latest - RPC_FALLBACK_INITIAL_WINDOW)
+        : lastRpcFallbackBlockRef.current + 1;
 
       // 1) Discover new plot IDs from PlotsPurchased logs.
       const LOG_CHUNK = 9_500;
