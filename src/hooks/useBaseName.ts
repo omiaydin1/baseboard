@@ -32,7 +32,7 @@ function getResolverClient() {
   if (!_resolverClient) {
     _resolverClient = createPublicClient({
       chain: mainnet,
-      transport: http("https://eth.merkle.io"),
+      transport: http("https://rpc.ankr.com/eth"),
     });
   }
   return _resolverClient;
