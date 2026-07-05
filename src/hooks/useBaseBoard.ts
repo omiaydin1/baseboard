@@ -25,7 +25,7 @@ import { useBoardStore } from "@/store/useBoardStore";
 import { resolveCoveringImage } from "@/lib/image";
 import { clearPendingTx, savePendingTx } from "@/lib/pendingTx";
 import { fetchTursoLeaderboard } from "@/lib/tursoClient";
-import { seedNameCache } from "./useBaseName";
+import { seedNameCache, resolveBaseNamesBatch } from "./useBaseName";
 
 /** viem chain object for a given chain id (for pinning write transactions). */
 function viemChainFor(chainId: number): Chain {
@@ -808,6 +808,10 @@ export function useAllMintedPlots(): AllMintedData {
         // Hand the raw batch to state; sorting/tie-break happens once in the
         // memo below, not here and not on every render.
         const counts = Array.from(currentCounts.entries());
+
+        // Batch-resolve basenames for all known owners via server-side API.
+        const ownerAddresses = Array.from(currentCounts.keys()) as `0x${string}`[];
+        resolveBaseNamesBatch(ownerAddresses).catch(() => {});
 
         // Persist the snapshot so the next reload hydrates instantly and the
         // scan resumes from `lastScannedBlock` rather than the deploy block.
