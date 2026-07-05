@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { getName, getNames } from "@coinbase/onchainkit/identity";
-import { isAddress, type Address } from "viem";
+import { createPublicClient, http, isAddress, type Address } from "viem";
 import { base } from "viem/chains";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +23,38 @@ function emit() {
   for (const l of listeners) l();
 }
 
+// Dedicated viem client for Basenames resolution on Base.
+// Uses the Basenames L2 Universal Resolver with a CCIP-read gateway fallback
+// so names resolve without an OnchainKit CDP API key.
+const BASENAMES_RESOLVER = "0xeeeeeeee14d718c2b47d9923deab1335e144eeee";
+
+let _resolverClient: ReturnType<typeof createPublicClient> | null = null;
+
+function getResolverClient() {
+  if (!_resolverClient) {
+    _resolverClient = createPublicClient({
+      chain: base,
+      transport: http("https://mainnet.base.org", {
+        gatewayUrls: ["https://gateway.bnname.com/v1"],
+      }),
+    });
+  }
+  return _resolverClient;
+}
+
+async function resolveBasename(address: Address): Promise<string | null> {
+  try {
+    const client = getResolverClient();
+    const name = await client.getEnsName({
+      address,
+      universalResolverAddress: BASENAMES_RESOLVER,
+    });
+    return name;
+  } catch {
+    return null;
+  }
+}
+
 function ensureResolved(key: string) {
   if (inflight.has(key)) return;
 
@@ -32,7 +63,7 @@ function ensureResolved(key: string) {
 
   inflight.add(key);
 
-  getName({ address: key as Address, chain: base })
+  resolveBasename(key as Address)
     .then((name) => {
       nameCache.set(key, {
         name: name ?? null,
@@ -76,10 +107,9 @@ export function seedNameCache(entries: Record<string, string | null>): void {
 }
 
 /**
- * Batch-resolve basenames for multiple addresses at once using OnchainKit's
- * `getNames` (which internally uses multicall on Base, then verifies forward
- * resolution). Seeds results into the shared cache so individual `useBaseName`
- * calls hit the cache on subsequent renders.
+ * Batch-resolve basenames for multiple addresses using the Basenames L2
+ * Universal Resolver (viem, no OnchainKit dependency). Seeds results into
+ * the shared cache so individual `useBaseName` calls hit the cache.
  */
 export async function resolveBaseNamesBatch(
   addresses: Address[],
@@ -96,22 +126,18 @@ export async function resolveBaseNamesBatch(
     if (!existing || existing.expiresAt <= now) uncached.push(addr);
   }
 
-  // Resolve uncached addresses in batch
+  // Resolve uncached addresses (in parallel, individually)
   if (uncached.length > 0) {
-    try {
-      const names = await getNames({ addresses: uncached, chain: base });
-      for (let i = 0; i < uncached.length; i++) {
-        nameCache.set(uncached[i], {
-          name: names[i] ?? null,
-          expiresAt: now + CACHE_TTL_MS,
-        });
-      }
-    } catch {
-      for (const addr of uncached) {
-        if (!nameCache.has(addr)) {
-          nameCache.set(addr, { name: null, expiresAt: now + 30_000 });
-        }
-      }
+    const results: Array<{ status: string; value?: string | null }> = await Promise.allSettled(
+      uncached.map((addr) => resolveBasename(addr)),
+    );
+    for (let i = 0; i < uncached.length; i++) {
+      const r = results[i];
+      const name = r.status === "fulfilled" ? r.value ?? null : null;
+      nameCache.set(uncached[i], {
+        name: name ?? null,
+        expiresAt: now + CACHE_TTL_MS,
+      });
     }
     emit();
   }
@@ -127,10 +153,9 @@ export async function resolveBaseNamesBatch(
 /**
  * Resolve a wallet address to its Basename (e.g. `omiaydin.base.eth`).
  *
- * Uses a three-tier approach:
+ * Uses a two-tier approach:
  *  1. Shared in-memory cache (populated from Turso indexer or prior resolutions)
- *  2. OnchainKit's `getName` (uses the app's wagmi provider + multicall on Base)
- *  3. Automatic short-TTL retry on failure
+ *  2. On-chain resolution via Basenames L2 Universal Resolver
  */
 export function useBaseName(address?: Address): string | null {
   const key =
