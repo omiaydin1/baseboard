@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { createPublicClient, http, isAddress, type Address } from "viem";
-import { base } from "viem/chains";
+import { createPublicClient, http, isAddress, toCoinType, type Address } from "viem";
+import { mainnet, base } from "viem/chains";
 
 // ---------------------------------------------------------------------------
 // Shared, deduplicated Basename cache
@@ -23,20 +23,16 @@ function emit() {
   for (const l of listeners) l();
 }
 
-// Dedicated viem client for Basenames resolution on Base.
-// Uses the Basenames L2 Universal Resolver with a CCIP-read gateway fallback
-// so names resolve without an OnchainKit CDP API key.
-const BASENAMES_RESOLVER = "0xeeeeeeee14d718c2b47d9923deab1335e144eeee";
-
+// Dedicated viem client for Basenames resolution on Ethereum mainnet.
+// Uses ENSIP-19 cross-chain resolution: the L1Resolver reads state proofs
+// from Base to resolve *.base.eth names without a CCIP-read gateway.
 let _resolverClient: ReturnType<typeof createPublicClient> | null = null;
 
 function getResolverClient() {
   if (!_resolverClient) {
     _resolverClient = createPublicClient({
-      chain: base,
-      transport: http("https://mainnet.base.org", {
-        gatewayUrls: ["https://gateway.bnname.com/v1"],
-      }),
+      chain: mainnet,
+      transport: http("https://eth.merkle.io"),
     });
   }
   return _resolverClient;
@@ -47,7 +43,7 @@ async function resolveBasename(address: Address): Promise<string | null> {
     const client = getResolverClient();
     const name = await client.getEnsName({
       address,
-      universalResolverAddress: BASENAMES_RESOLVER,
+      coinType: toCoinType(base.id),
     });
     return name;
   } catch {
