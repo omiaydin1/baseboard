@@ -2,10 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { createPublicClient, http, toCoinType } from "viem";
 import { mainnet, base } from "viem/chains";
 
-const client = createPublicClient({
-  chain: mainnet,
-  transport: http("https://rpc.ankr.com/eth"),
-});
+const RPCS = [
+  "https://rpc.ankr.com/eth",
+  "https://1rpc.io/eth",
+  "https://eth.drpc.org",
+];
+
+function getClient() {
+  return createPublicClient({
+    chain: mainnet,
+    transport: http(RPCS[Math.floor(Math.random() * RPCS.length)]),
+  });
+}
 
 /**
  * Resolves Basenames for one or more addresses via ENSIP-19 cross-chain
@@ -20,6 +28,7 @@ export async function GET(req: NextRequest) {
 
   try {
     if (address) {
+      const client = getClient();
       const name = await client.getEnsName({
         address: address as `0x${string}`,
         coinType: toCoinType(base.id),
@@ -32,6 +41,7 @@ export async function GET(req: NextRequest) {
         .split(",")
         .map((a) => a.trim())
         .filter((a) => a.startsWith("0x")) as `0x${string}`[];
+      const client = getClient();
       const results = await Promise.allSettled(
         addresses.map((addr) =>
           client.getEnsName({ address: addr, coinType: toCoinType(base.id) }),
