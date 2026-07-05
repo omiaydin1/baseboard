@@ -1067,6 +1067,7 @@ export function BaseBoardCanvas() {
     preloadImages(res.plots);
     dirtyRef.current = true;
     forceTick((t) => t + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.isConfigured]);
 
   // Track all known minted plot IDs discovered from PlotsPurchased logs so
