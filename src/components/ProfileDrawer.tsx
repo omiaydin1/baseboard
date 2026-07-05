@@ -12,6 +12,7 @@ import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { plotIdFromXY, shortAddress, xyFromPlotId } from "@/lib/coords";
 import { useBaseName } from "@/hooks/useBaseName";
+import { fetchTursoBoard } from "@/lib/tursoClient";
 import {
   MAX_ONCHAIN_IMAGE_BYTES,
   MAX_UPLOAD_BYTES,
@@ -217,6 +218,33 @@ export function ProfileDrawer() {
           map[ids[i]] = p;
         });
         setDetails(map);
+
+        // Diagnostic: compare RPC imageUri against Turso cache for the
+        // same plot ids to detect stale/incomplete RPC state.
+        if (ids.length > 0) {
+          fetchTursoBoard(ids).then((tursoRes) => {
+            if (cancelled || !tursoRes) return;
+            const diffs: Array<{ id: number; rpcUri: string; tursoUri: string }> = [];
+            ids.forEach((id: number) => {
+              const rpc = map[id];
+              const turso = tursoRes.plots[id];
+              if (!rpc || !turso) return;
+              if ((rpc.imageUri || "") !== (turso.imageUri || "")) {
+                diffs.push({ id, rpcUri: rpc.imageUri, tursoUri: turso.imageUri });
+              }
+            });
+            if (diffs.length > 0) {
+              console.warn(
+                `[ProfileDrawer] RPC/Turso imageUri mismatch for ${diffs.length}/${ids.length} plot(s)`,
+                diffs,
+              );
+            } else {
+              console.log(
+                `[ProfileDrawer] RPC/Turso imageUri match (${ids.length} plot(s))`,
+              );
+            }
+          });
+        }
       } catch {
         /* ignore */
       }

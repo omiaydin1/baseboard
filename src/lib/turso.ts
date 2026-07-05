@@ -13,12 +13,18 @@ function loadConfig(): TursoConfig | null {
 }
 
 let _client: ReturnType<typeof createClient> | null = null;
+let _schemaEnsured = false;
 
-export function getTursoClient(): ReturnType<typeof createClient> | null {
-  if (_client) return _client;
-  const cfg = loadConfig();
-  if (!cfg) return null;
-  _client = createClient({ url: cfg.url, authToken: cfg.authToken });
+export async function getTursoClient(): Promise<ReturnType<typeof createClient> | null> {
+  if (!_client) {
+    const cfg = loadConfig();
+    if (!cfg) return null;
+    _client = createClient({ url: cfg.url, authToken: cfg.authToken });
+  }
+  if (!_schemaEnsured) {
+    await ensureSchema(_client);
+    _schemaEnsured = true;
+  }
   return _client;
 }
 

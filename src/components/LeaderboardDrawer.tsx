@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useAccount } from "wagmi";
 import { Drawer } from "./Drawer";
 import { Spinner } from "./Spinner";
@@ -86,24 +86,16 @@ export function LeaderboardDrawer() {
   const { loading, ranking } = useAllMintedContext();
   const age = useLeaderboardAge();
 
-  const [page, setPage] = useState(0);
-  const pageCount = Math.max(1, Math.ceil(ranking.length / PAGE_SIZE));
-
-  // Keep the page index in range as data loads / changes.
-  useEffect(() => {
-    if (page > pageCount - 1) setPage(0);
-  }, [page, pageCount]);
-
   const me = address?.toLowerCase();
   const myEntry = useMemo(
     () => (me ? ranking.find((e) => e.owner.toLowerCase() === me) : undefined),
     [ranking, me],
   );
 
-  const pageRows = ranking.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  // Only show the top 10. If the connected wallet is outside the top 10,
+  // their own rank appears as a separate "Your rank" pinned banner.
+  const pageRows = ranking.slice(0, PAGE_SIZE);
 
-  // Only pin a separate "Your rank" card when the connected wallet isn't already
-  // visible on the current page — otherwise it duplicates the highlighted row.
   const myEntryVisible =
     !!me && pageRows.some((e) => e.owner.toLowerCase() === me);
 
@@ -155,29 +147,7 @@ export function LeaderboardDrawer() {
             ))}
           </ul>
 
-          {pageCount > 1 && (
-            <div className="flex items-center justify-between pt-1">
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-                className="rounded-lg border-2 border-base-blue px-3 py-1.5 text-sm font-semibold text-base-blue transition hover:bg-blue-50 disabled:opacity-40"
-              >
-                ‹ Prev
-              </button>
-              <span className="text-xs font-semibold text-slate-500">
-                Page {page + 1} of {pageCount}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-                disabled={page >= pageCount - 1}
-                className="rounded-lg border-2 border-base-blue px-3 py-1.5 text-sm font-semibold text-base-blue transition hover:bg-blue-50 disabled:opacity-40"
-              >
-                Next ›
-              </button>
-            </div>
-          )}
+
         </div>
       )}
     </Drawer>

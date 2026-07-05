@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ plots: {}, fromCache: false } satisfies BoardResponse);
   }
 
-  const client = getTursoClient();
+  const client = await getTursoClient();
   if (!client) {
     return NextResponse.json({ plots: {}, fromCache: false } satisfies BoardResponse);
   }
