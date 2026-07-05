@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 /**
  * Odometer-style numeric display. Each digit sits in its own subtle slate
  * "well" and rolls vertically when it changes (only the digits that actually
@@ -44,12 +46,15 @@ export function AnimatedNumber({
   value: string;
   className?: string;
 }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const display = mounted ? value : "0";
   return (
     <span className={`inline-flex items-center tabular-nums ${className ?? ""}`}>
       {/* Accessible plain value for screen readers. */}
-      <span className="sr-only">{value}</span>
+      <span className="sr-only">{display}</span>
       <span aria-hidden className="inline-flex items-center gap-[1px]">
-        {value.split("").map((ch, i) =>
+        {display.split("").map((ch, i) =>
           /[0-9]/.test(ch) ? (
             <Digit key={i} value={Number(ch)} />
           ) : (
