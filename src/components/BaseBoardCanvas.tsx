@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { usePublicClient, useAccount, useChainId } from "wagmi";
+import { usePublicClient, useAccount, useChainId, useWatchContractEvent } from "wagmi";
 import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
@@ -37,7 +37,6 @@ const MAX_SCALE = 48;
 const GRID_FADE_START = 4; // px/cell where grid lines begin to appear
 const GRID_FADE_FULL = 12; // px/cell where grid lines are fully opaque
 const IMAGE_MIN_SCALE = 6; // px/cell before images are drawn
-const MAX_QUERY_CELLS = 1600; // cap on per-viewport contract reads
 const LOD_THUMB_DIM = 128; // longest side of the cached LOD thumbnail
 // Above this many on-screen image groups we always blit the cheap LOD
 // thumbnail instead of the full-resolution source, even when zoomed in.
@@ -51,6 +50,7 @@ const MAX_ICON_PX = 20;
 const IMAGE_CACHE_MAX = 200; // max entries in imageCacheRef before LRU eviction
 const LOD_CACHE_MAX = 200;   // max entries in lodCacheRef before LRU eviction
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
+const STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * High-performance, virtualized HTML5 canvas renderer for the 3162x3162 grid.
@@ -897,72 +897,7 @@ export function BaseBoardCanvas() {
   );
 
   // -------------------------------------------------------------------
-  // Data loading for the visible viewport (debounced on camera settle)
-  // -------------------------------------------------------------------
-  const loadViewport = useCallback(async () => {
-    if (!cfg.isConfigured || !publicClient) return;
-    const cam = cameraRef.current;
-    const { width, height } = sizeRef.current;
-    const startX = Math.max(0, Math.floor(cam.camX));
-    const startY = Math.max(0, Math.floor(cam.camY));
-    const endX = Math.min(GRID_SIZE - 1, Math.ceil(cam.camX + width / cam.scale));
-    const endY = Math.min(GRID_SIZE - 1, Math.ceil(cam.camY + height / cam.scale));
-
-    const cols = endX - startX + 1;
-    const rows = endY - startY + 1;
-    if (cols * rows > MAX_QUERY_CELLS) return; // too zoomed out to enumerate
-
-    const ids: bigint[] = [];
-    for (let y = startY; y <= endY; y++) {
-      for (let x = startX; x <= endX; x++) {
-        ids.push(BigInt(plotIdFromXY(x, y)));
-      }
-    }
-    if (ids.length === 0) return;
-
-    try {
-      const result = (await readContractWithTimeout(
-        publicClient.readContract({
-          address: cfg.contract,
-          abi: baseBoardAbi,
-          functionName: "getPlotsBatch",
-          args: [ids],
-        }),
-      )) as readonly Plot[];
-
-      const map = plotMapRef.current;
-      result.forEach((plot, i) => {
-        const id = Number(ids[i]);
-        if (plot.owner.toLowerCase() !== ZERO_ADDRESS) {
-          map.set(id, plot);
-        } else {
-          map.delete(id);
-        }
-      });
-      dirtyRef.current = true;
-      forceTick((t) => t + 1);
-    } catch {
-      /* read failed (rpc / not deployed) — keep prior data */
-    }
-  }, [publicClient, cfg.isConfigured, cfg.contract]);
-
-  // Debounce viewport loads.
-  const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const scheduleLoad = useCallback(() => {
-    if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
-    loadTimerRef.current = setTimeout(() => void loadViewport(), 220);
-  }, [loadViewport]);
-
-  // -------------------------------------------------------------------
-  // Global load: enumerate *every* minted plot so owned / for-sale plots are
-  // visible at any zoom level (the viewport scan above only covers a small,
-  // zoomed-in window). We discover minted plot ids from `PlotsPurchased` logs
-  // (scanned incrementally from the deploy block) then batch-read their current
-  // on-chain state so listings / transfers stay accurate.
-  // -------------------------------------------------------------------
-  const allMintedIdsRef = useRef<Set<number>>(new Set());
-  const lastScanBlockRef = useRef<number>(0);
-  const globalLoadingRef = useRef(false);
+  // Purchase-density overlay state (Part 10.2)
 
   // ---- Purchase-density overlay state (Part 10.2) ----
   // Block at which each plot was last seen purchased (drives the recency
@@ -1038,25 +973,87 @@ export function BaseBoardCanvas() {
     dirtyRef.current = true;
   }, [densityEnabled, bakeDensity]);
 
-  const loadAllMinted = useCallback(async () => {
-    if (!cfg.isConfigured || !publicClient) return;
-    if (globalLoadingRef.current) return;
-    const loadAllLabel = `loadAllMinted: known=${allMintedIdsRef.current.size}`;
-    console.time(loadAllLabel);
-    globalLoadingRef.current = true;
+  // -------------------------------------------------------------------
+  // Real-time PlotsPurchased event watcher (incremental updates)
+  // -------------------------------------------------------------------
+  useWatchContractEvent({
+    address: cfg.isConfigured ? cfg.contract : undefined,
+    abi: baseBoardAbi,
+    eventName: "PlotsPurchased",
+    onLogs(logs: { args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint }[]) {
+      if (logs.length === 0) return;
+      const newPlotIds: number[] = [];
+      logs.forEach((log: { args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint }) => {
+        const args = log.args as { plotIds?: readonly bigint[] };
+        args.plotIds?.forEach((b) => {
+          const id = Number(b);
+          newPlotIds.push(id);
+          purchaseBlockRef.current.set(id, Number(log.blockNumber ?? 0n));
+        });
+      });
+      if (newPlotIds.length === 0) return;
+      // Batch-read just the newly purchased plots from chain.
+      if (!publicClient) return;
+      void (async () => {
+        try {
+          const result = (await readContractWithTimeout(
+            publicClient.readContract({
+              address: cfg.contract,
+              abi: baseBoardAbi,
+              functionName: "getPlotsBatch",
+              args: [newPlotIds.map((n) => BigInt(n))],
+            }),
+          )) as readonly Plot[];
+          const map = plotMapRef.current;
+          result.forEach((plot, i) => {
+            const id = newPlotIds[i];
+            if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
+            else map.delete(id);
+          });
+          if (densityEnabledRef.current) bakeDensity();
+          dirtyRef.current = true;
+          forceTick((t) => t + 1);
+        } catch { /* rpc unavailable */ }
+      })();
+    },
+  });
+
+  // -------------------------------------------------------------------
+  // Turso-first data loading
+  // -------------------------------------------------------------------
+  const lastSuccessfulFetchRef = useRef(0);
+  const lastRpcFallbackBlockRef = useRef(0);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [stalenessSec, setStalenessSec] = useState(0);
+
+  // Fetch all owned plots from Turso (the primary data source).
+  const fetchFromTurso = useCallback(async () => {
+    if (!cfg.isConfigured) return;
+    const res = await fetchTursoBoard(undefined);
+    if (!res?.fromCache) return;
+    const map = plotMapRef.current;
+    Object.entries(res.plots).forEach(([id, plot]) => {
+      map.set(Number(id), plot);
+    });
+    lastSuccessfulFetchRef.current = Date.now();
+    setStalenessSec(0);
+    dirtyRef.current = true;
+    forceTick((t) => t + 1);
+  }, [cfg.isConfigured]);
+
+  // RPC fallback: batch-read all known plot states from chain and discover any
+  // new plots the indexer may have missed. Called only when Turso data is stale.
+  const rpcFallback = useCallback(async () => {
+    if (!publicClient || !cfg.isConfigured) return;
     try {
       const latest = Number(await publicClient.getBlockNumber());
-      const from =
-        lastScanBlockRef.current > 0
-          ? lastScanBlockRef.current + 1
+      const fromBlock =
+        lastRpcFallbackBlockRef.current > 0
+          ? lastRpcFallbackBlockRef.current + 1
           : cfg.deployBlock;
 
-      // 1) Discover newly-minted plot ids from PlotsPurchased logs (chunked to
-      //    respect RPC block-range limits). Base's public RPC caps eth_getLogs
-      //    at a 10,000-block range, so a larger window makes EVERY request fail
-      //    and no plots ever load when zoomed out — keep this safely under 10k.
       const LOG_CHUNK = 9_500;
-      for (let start = from; start <= latest; start += LOG_CHUNK + 1) {
+      for (let start = fromBlock; start <= latest; start += LOG_CHUNK + 1) {
         const end = Math.min(start + LOG_CHUNK, latest);
         try {
           const logs = await publicClient.getContractEvents({
@@ -1066,28 +1063,23 @@ export function BaseBoardCanvas() {
             fromBlock: BigInt(start),
             toBlock: BigInt(end),
           });
-          logs.forEach((log) => {
+          logs.forEach((log: { args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint }) => {
             const blk = Number(log.blockNumber ?? 0n);
-            const args = log.args as { plotIds?: readonly bigint[] };
-            args.plotIds?.forEach((b) => {
-              const id = Number(b);
-              allMintedIdsRef.current.add(id);
-              purchaseBlockRef.current.set(id, blk);
+            const args = log.args;
+            args?.plotIds?.forEach((b) => {
+              purchaseBlockRef.current.set(Number(b), blk);
             });
           });
-        } catch {
-          /* range rejected by RPC — skip this window, keep going */
-        }
+        } catch { /* skip failed chunk */ }
       }
-      lastScanBlockRef.current = latest;
+      lastRpcFallbackBlockRef.current = latest;
       latestBlockRef.current = latest;
 
-      // 2) Refresh current state for every known plot id (chunked reads).
-      const all = Array.from(allMintedIdsRef.current);
+      const allIds = Array.from(plotMapRef.current.keys());
       const map = plotMapRef.current;
       const READ_CHUNK = 400;
-      for (let i = 0; i < all.length; i += READ_CHUNK) {
-        const slice = all.slice(i, i + READ_CHUNK);
+      for (let i = 0; i < allIds.length; i += READ_CHUNK) {
+        const slice = allIds.slice(i, i + READ_CHUNK);
         try {
           const res = (await readContractWithTimeout(
             publicClient.readContract({
@@ -1102,42 +1094,38 @@ export function BaseBoardCanvas() {
             if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
             else map.delete(id);
           });
-          // Paint progressively so plots appear as each chunk lands instead of
-          // only after the entire (possibly large) scan finishes.
           dirtyRef.current = true;
           forceTick((t) => t + 1);
-        } catch {
-          /* keep prior data for this chunk */
-        }
+        } catch { /* keep prior data */ }
       }
-      // Skip the bake entirely when the overlay is off — no density work runs
-      // until the user enables it (the toggle's effect bakes on demand).
+
       if (densityEnabledRef.current) bakeDensity();
       dirtyRef.current = true;
       forceTick((t) => t + 1);
-    } catch {
-      console.timeEnd(loadAllLabel);
-      /* rpc unavailable — keep whatever we have */
-    } finally {
-      globalLoadingRef.current = false;
-      console.timeEnd(loadAllLabel);
-    }
+    } catch { /* RPC unavailable */ }
   }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity]);
 
-  // State isolation: when the active chain changes, wipe every
-  // cached plot, the minted-id set, the log-scan cursor, decoded images and any
-  // optimistic overrides so we never show one network's board on another. The
-  // load effects below re-run automatically (their callbacks are rebuilt from
-  // the new chain's contract) and repopulate from the active network.
+  // Staleness counter: updates every 15s so the indicator stays current.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const elapsed = Date.now() - lastSuccessfulFetchRef.current;
+      setStalenessSec(Math.round(elapsed / 1000));
+      // Fire RPC fallback if no fetch has succeeded in >5 min.
+      if (elapsed > STALE_AFTER_MS) void rpcFallback();
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [rpcFallback]);
+
+  // State isolation: when the chain changes, wipe all cached data.
   const prevChainRef = useRef(chainId);
   useEffect(() => {
     if (prevChainRef.current === chainId) return;
     prevChainRef.current = chainId;
     plotMapRef.current.clear();
-    allMintedIdsRef.current.clear();
-    lastScanBlockRef.current = 0;
     purchaseBlockRef.current.clear();
     latestBlockRef.current = 0;
+    lastRpcFallbackBlockRef.current = 0;
+    lastSuccessfulFetchRef.current = 0;
     densityCanvasRef.current = null;
     imageCacheRef.current.clear();
     lodCacheRef.current.clear();
@@ -1147,54 +1135,29 @@ export function BaseBoardCanvas() {
     forceTick((t) => t + 1);
   }, [chainId, clearOptimisticPlots]);
 
-  // Turso-backed fast initial load: populate plotMapRef from the Turso cache
-  // while the full RPC scan is in flight, so owned plots render immediately on
-  // mount instead of waiting for the first RPC batch-read to complete.
+  // Turso fetch on mount (primary initial load).
   useEffect(() => {
     if (!cfg.isConfigured) return;
     let cancelled = false;
     (async () => {
-      const res = await fetchTursoBoard(undefined);
-      if (cancelled || !res?.fromCache) return;
-      const map = plotMapRef.current;
-      Object.entries(res.plots).forEach(([id, plot]) => {
-        map.set(Number(id), plot);
-      });
-      dirtyRef.current = true;
-      forceTick((t) => t + 1);
+      await fetchFromTurso();
+      if (cancelled) return;
+      // On mount, also fire one RPC fallback to catch anything the indexer
+      // may have missed. Subsequent updates rely on Turso + staleness check.
+      void rpcFallback();
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.isConfigured]);
 
-  // Initial global load + light polling so other users' buys/listings appear
-  // without a manual refresh, at every zoom level.
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Turso re-fetch on tx settlement + 30s polling.
   useEffect(() => {
-    void loadAllMinted();
-    pollTimerRef.current = setInterval(() => void loadAllMinted(), 30_000);
+    void fetchFromTurso();
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    pollTimerRef.current = setInterval(() => void fetchFromTurso(), 30_000);
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [loadAllMinted]);
-
-  // Re-scan after our own tx settles so changes reflect immediately.
-  useEffect(() => {
-    void loadAllMinted();
-    // Reset the 30s poll timer so a manual refresh doesn't double-trigger.
-    if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = setInterval(() => void loadAllMinted(), 30_000);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshNonce]);
-
-  // Reload when data is invalidated by a settled tx. We re-read the visible
-  // viewport immediately (no debounce, no full clear) so ownership/status
-  // changes show up right after the receipt confirms instead of on the next
-  // poll. loadViewport self-corrects each cell (set if owned, delete if free).
-  useEffect(() => {
-    void loadViewport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshNonce]);
 
@@ -1227,7 +1190,6 @@ export function BaseBoardCanvas() {
     clampCamera();
     setZoomLabel(cam.scale);
     dirtyRef.current = true;
-    scheduleLoad();
     setFocusPlotId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusPlotId]);
@@ -1258,12 +1220,11 @@ export function BaseBoardCanvas() {
       clampCamera();
       setZoomLabel(cam.scale);
       dirtyRef.current = true;
-      scheduleLoad();
     };
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
-  }, [clampCamera, fitScale, scheduleLoad]);
+  }, [clampCamera, fitScale]);
 
   // -------------------------------------------------------------------
   // Pointer interactions (pan / marquee / click-select)
@@ -1342,7 +1303,6 @@ export function BaseBoardCanvas() {
         cam.camX -= (sx - p.lastSx) / cam.scale;
         cam.camY -= (sy - p.lastSy) / cam.scale;
         clampCamera();
-        scheduleLoad();
       } else if (p.marquee) {
         p.curCell = {
           x: clamp(cell.x, 0, GRID_SIZE - 1),
@@ -1352,7 +1312,7 @@ export function BaseBoardCanvas() {
       p.lastSx = sx;
       p.lastSy = sy;
     },
-    [clampCamera, getLocal, screenToCell, scheduleLoad],
+    [clampCamera, getLocal, screenToCell],
   );
 
   const onPointerUp = useCallback(
@@ -1508,7 +1468,6 @@ export function BaseBoardCanvas() {
             cam.camY -= (sy - t.lastY) / cam.scale;
             clampCamera();
             dirtyRef.current = true;
-            scheduleLoad();
           }
         }
         t.lastX = sx;
@@ -1533,7 +1492,6 @@ export function BaseBoardCanvas() {
           clampCamera();
           setZoomLabel(cam.scale);
           dirtyRef.current = true;
-          scheduleLoad();
         }
         t.lastDist = dist;
         t.lastMidX = midX;
@@ -1591,7 +1549,6 @@ export function BaseBoardCanvas() {
     clampCamera,
     fitScale,
     handleSingleSelect,
-    scheduleLoad,
     screenToCell,
     setBuySelection,
   ]);
@@ -1614,17 +1571,15 @@ export function BaseBoardCanvas() {
       clampCamera();
       setZoomLabel(cam.scale);
       dirtyRef.current = true;
-      scheduleLoad();
     },
-    [clampCamera, fitScale, scheduleLoad],
+    [clampCamera, fitScale],
   );
 
   const recenter = useCallback(() => {
     fitWholeBoard();
     clampCamera();
     dirtyRef.current = true;
-    scheduleLoad();
-  }, [clampCamera, fitWholeBoard, scheduleLoad]);
+  }, [clampCamera, fitWholeBoard]);
 
   const cursorClass = useMemo(() => {
     if (tool === "select") return "cursor-crosshair";
@@ -1705,11 +1660,16 @@ export function BaseBoardCanvas() {
         </div>
       </div>
 
-      {/* Coordinate / zoom readout (hidden on mobile so the centered density
-          controls own the bottom of the board there) */}
+      {/* Coordinate / zoom / staleness readout (hidden on mobile so the
+          centered density controls own the bottom of the board there) */}
       <div className="pointer-events-none absolute bottom-3 left-3 hidden rounded-lg bg-base-blue/90 px-3 py-1.5 text-xs font-semibold text-white shadow sm:block">
         {hoverInfo ? `X: ${hoverInfo.x} · Y: ${hoverInfo.y}` : "Hover the board"}
         <span className="ml-2 opacity-80">· {zoomLabel.toFixed(1)} px/cell</span>
+        {stalenessSec > 10 && (
+          <span className="ml-2 opacity-60">
+            · {stalenessSec < 60 ? `<1m` : `${Math.floor(stalenessSec / 60)}m`}
+          </span>
+        )}
       </div>
 
       {/* Hint */}
