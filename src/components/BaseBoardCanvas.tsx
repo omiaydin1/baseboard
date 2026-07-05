@@ -1037,12 +1037,19 @@ export function BaseBoardCanvas() {
     });
     lastSuccessfulFetchRef.current = Date.now();
     setStalenessSec(0);
+    // Seed the known-minted set from Turso data so rpcFallback can refresh them.
+    Object.keys(res.plots).forEach((id) => allMintedRef.current.add(Number(id)));
     dirtyRef.current = true;
     forceTick((t) => t + 1);
   }, [cfg.isConfigured]);
 
-  // RPC fallback: batch-read all known plot states from chain and discover any
-  // new plots the indexer may have missed. Called only when Turso data is stale.
+  // Track all known minted plot IDs discovered from PlotsPurchased logs so
+  // rpcFallback can batch-read their state even when Turso is not configured.
+  const allMintedRef = useRef<Set<number>>(new Set());
+
+  // RPC fallback: scan PlotsPurchased logs to discover minted plot IDs, then
+  // batch-read their current on-chain state. Called on mount (after Turso
+  // fetch) and when Turso data is >5 min stale.
   const rpcFallback = useCallback(async () => {
     if (!publicClient || !cfg.isConfigured) return;
     try {
@@ -1052,7 +1059,9 @@ export function BaseBoardCanvas() {
           ? lastRpcFallbackBlockRef.current + 1
           : cfg.deployBlock;
 
+      // 1) Discover new plot IDs from PlotsPurchased logs.
       const LOG_CHUNK = 9_500;
+      const freshIds: number[] = [];
       for (let start = fromBlock; start <= latest; start += LOG_CHUNK + 1) {
         const end = Math.min(start + LOG_CHUNK, latest);
         try {
@@ -1067,7 +1076,12 @@ export function BaseBoardCanvas() {
             const blk = Number(log.blockNumber ?? 0n);
             const args = log.args;
             args?.plotIds?.forEach((b) => {
-              purchaseBlockRef.current.set(Number(b), blk);
+              const id = Number(b);
+              purchaseBlockRef.current.set(id, blk);
+              if (!allMintedRef.current.has(id)) {
+                allMintedRef.current.add(id);
+                freshIds.push(id);
+              }
             });
           });
         } catch { /* skip failed chunk */ }
@@ -1075,7 +1089,9 @@ export function BaseBoardCanvas() {
       lastRpcFallbackBlockRef.current = latest;
       latestBlockRef.current = latest;
 
-      const allIds = Array.from(plotMapRef.current.keys());
+      // 2) Batch-read current state for ALL known plot IDs (previously known
+      //    from Turso AND newly discovered from logs).
+      const allIds = Array.from(allMintedRef.current);
       const map = plotMapRef.current;
       const READ_CHUNK = 400;
       for (let i = 0; i < allIds.length; i += READ_CHUNK) {
@@ -1126,6 +1142,7 @@ export function BaseBoardCanvas() {
     latestBlockRef.current = 0;
     lastRpcFallbackBlockRef.current = 0;
     lastSuccessfulFetchRef.current = 0;
+    allMintedRef.current.clear();
     densityCanvasRef.current = null;
     imageCacheRef.current.clear();
     lodCacheRef.current.clear();
