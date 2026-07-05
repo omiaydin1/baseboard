@@ -116,6 +116,12 @@ export function BaseBoardCanvas() {
   });
   const hoverCellRef = useRef<{ x: number; y: number } | null>(null);
 
+  // Offscreen canvas for double-buffered compositing. All per-frame drawing
+  // (plots, images, grid lines, overlays) targets this buffer; the visible
+  // canvas only receives one drawImage blit per frame — eliminating the GPU
+  // pipeline flush that per-element fillRect/clip/drawImage calls cause.
+  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
+
   // Touch state for multi-touch gestures (mobile: 1-finger pan, 2-finger pinch).
   const touchRef = useRef({
     active: 0,
@@ -213,11 +219,24 @@ export function BaseBoardCanvas() {
     const resize = () => {
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
+      const w = Math.floor(rect.width * dpr);
+      const h = Math.floor(rect.height * dpr);
       sizeRef.current = { width: rect.width, height: rect.height, dpr };
-      canvas.width = Math.floor(rect.width * dpr);
-      canvas.height = Math.floor(rect.height * dpr);
+      canvas.width = w;
+      canvas.height = h;
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
+
+      // Keep the offscreen compositing buffer in sync with the visible canvas.
+      let offscreen = offscreenRef.current;
+      if (!offscreen) {
+        offscreen = document.createElement("canvas");
+        offscreenRef.current = offscreen;
+      }
+      if (offscreen.width !== w || offscreen.height !== h) {
+        offscreen.width = w;
+        offscreen.height = h;
+      }
 
       // On first valid size, frame the whole board as a centered welcome view.
       const cam = cameraRef.current;
@@ -257,12 +276,32 @@ export function BaseBoardCanvas() {
 
     const { width, height, dpr } = sizeRef.current;
     const cam = cameraRef.current;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
+
+    // ----------------------------------------------------------------
+    // Phase 1: Composite the static board layer onto the offscreen
+    // buffer.  All per-element draw calls (fillRect per cell, drawImage
+    // per group, clip per zone) target this non-displayed canvas, so
+    // the GPU pipeline never flushes per-call to the display.
+    // ----------------------------------------------------------------
+    let offscreen = offscreenRef.current;
+    if (!offscreen) {
+      offscreen = document.createElement("canvas");
+      offscreenRef.current = offscreen;
+    }
+    const pixelW = Math.floor(width * dpr);
+    const pixelH = Math.floor(height * dpr);
+    if (offscreen.width !== pixelW || offscreen.height !== pixelH) {
+      offscreen.width = pixelW;
+      offscreen.height = pixelH;
+    }
+    const offCtx = offscreen.getContext("2d")!;
+    offCtx.setTransform(1, 0, 0, 1, 0, 0);
+    offCtx.clearRect(0, 0, pixelW, pixelH);
+    offCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Board background (pure white surface inside the frame).
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, width, height);
+    offCtx.fillStyle = "#ffffff";
+    offCtx.fillRect(0, 0, width, height);
 
     // Visible cell range.
     const startX = Math.max(0, Math.floor(cam.camX));
@@ -277,54 +316,45 @@ export function BaseBoardCanvas() {
     const boardLeft = cellToScreenX(0);
     const boardTop = cellToScreenY(0);
     const boardSize = GRID_SIZE * cam.scale;
-    ctx.fillStyle = "#f8fbff";
-    ctx.fillRect(boardLeft, boardTop, boardSize, boardSize);
+    offCtx.fillStyle = "#f8fbff";
+    offCtx.fillRect(boardLeft, boardTop, boardSize, boardSize);
 
     // ---- Owned plots + stretched images (grouped by owner+uri) ----
-    // Clip to the board's content rect so nothing — including the enforced
-    // minimum marker size at full zoom-out — can ever draw past the grid
-    // boundary and bleed outside the framed canvas.
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(boardLeft, boardTop, boardSize, boardSize);
-    ctx.clip();
-    drawPlots(ctx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
-    ctx.restore();
+    offCtx.save();
+    offCtx.beginPath();
+    offCtx.rect(boardLeft, boardTop, boardSize, boardSize);
+    offCtx.clip();
+    drawPlots(offCtx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
+    offCtx.restore();
 
-    // ---- Purchase-density overlay (Part 10.2) ----
-    // Additive translucent blue layer on top of the pixel fills, strictly
-    // clipped to the board rect so it can never bleed outside the frame. The
-    // coarse baked field is stretched across the board with bilinear smoothing
-    // for a soft gradient; its capped alpha keeps the underlying pixels visible.
+    // ---- Purchase-density overlay ----
     const densityField = densityCanvasRef.current;
     if (densityEnabledRef.current && densityField && densityField.width > 0) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(boardLeft, boardTop, boardSize, boardSize);
-      ctx.clip();
-      const prevSmoothing = ctx.imageSmoothingEnabled;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(densityField, boardLeft, boardTop, boardSize, boardSize);
-      ctx.imageSmoothingEnabled = prevSmoothing;
-      ctx.restore();
+      offCtx.save();
+      offCtx.beginPath();
+      offCtx.rect(boardLeft, boardTop, boardSize, boardSize);
+      offCtx.clip();
+      const prevSmoothing = offCtx.imageSmoothingEnabled;
+      offCtx.imageSmoothingEnabled = true;
+      offCtx.imageSmoothingQuality = "high";
+      offCtx.drawImage(densityField, boardLeft, boardTop, boardSize, boardSize);
+      offCtx.imageSmoothingEnabled = prevSmoothing;
+      offCtx.restore();
     }
 
-    // ---- Solid Base-blue outline marking the active grid boundary ----
-    // Always visible so the playable map is clearly separated from the white
-    // inner container, even when zoomed all the way out.
-    ctx.save();
-    ctx.strokeStyle = "#0052ff";
-    ctx.lineWidth = 3;
-    ctx.strokeRect(
+    // ---- Grid border ----
+    offCtx.save();
+    offCtx.strokeStyle = "#0052ff";
+    offCtx.lineWidth = 3;
+    offCtx.strokeRect(
       boardLeft + 1.5,
       boardTop + 1.5,
       boardSize - 3,
       boardSize - 3,
     );
-    ctx.restore();
+    offCtx.restore();
 
-    // ---- Grid lines (fade in as we zoom in) ----
+    // ---- Grid lines (fade in as zoom increases) ----
     const gridAlpha =
       cam.scale <= GRID_FADE_START
         ? 0
@@ -333,23 +363,56 @@ export function BaseBoardCanvas() {
           : (cam.scale - GRID_FADE_START) / (GRID_FADE_FULL - GRID_FADE_START);
 
     if (gridAlpha > 0.02) {
-      ctx.save();
-      ctx.strokeStyle = `rgba(59,130,246,${0.35 * gridAlpha})`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
+      offCtx.save();
+      offCtx.strokeStyle = `rgba(59,130,246,${0.35 * gridAlpha})`;
+      offCtx.lineWidth = 1;
+      offCtx.beginPath();
       for (let x = startX; x <= endX + 1; x++) {
         const sx = Math.round(cellToScreenX(x)) + 0.5;
-        ctx.moveTo(sx, Math.max(0, boardTop));
-        ctx.lineTo(sx, Math.min(height, boardTop + boardSize));
+        offCtx.moveTo(sx, Math.max(0, boardTop));
+        offCtx.lineTo(sx, Math.min(height, boardTop + boardSize));
       }
       for (let y = startY; y <= endY + 1; y++) {
         const sy = Math.round(cellToScreenY(y)) + 0.5;
-        ctx.moveTo(Math.max(0, boardLeft), sy);
-        ctx.lineTo(Math.min(width, boardLeft + boardSize), sy);
+        offCtx.moveTo(Math.max(0, boardLeft), sy);
+        offCtx.lineTo(Math.min(width, boardLeft + boardSize), sy);
       }
-      ctx.stroke();
-      ctx.restore();
+      offCtx.stroke();
+      offCtx.restore();
     }
+
+    // ---- Basket (tap-to-add multi-select) on the board layer ----
+    const basketIds = basketSetRef.current;
+    if (basketIds.size > 0) {
+      offCtx.save();
+      offCtx.fillStyle = "rgba(0,82,255,0.30)";
+      offCtx.strokeStyle = "#0052ff";
+      offCtx.lineWidth = Math.max(1, Math.min(3, cam.scale * 0.15));
+      basketIds.forEach((id) => {
+        const { x, y } = xyFromPlotId(id);
+        if (x < startX - 1 || x > endX + 1 || y < startY - 1 || y > endY + 1)
+          return;
+        const sx = cellToScreenX(x);
+        const sy = cellToScreenY(y);
+        offCtx.fillRect(sx, sy, cam.scale, cam.scale);
+        if (cam.scale > 3) offCtx.strokeRect(sx, sy, cam.scale, cam.scale);
+      });
+      offCtx.restore();
+    }
+
+    // ----------------------------------------------------------------
+    // Phase 2: Blit the composited board onto the visible canvas with
+    // one GPU-composited drawImage call.
+    // ----------------------------------------------------------------
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(offscreen, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // ----------------------------------------------------------------
+    // Phase 3: Dynamic overlays drawn directly on the visible canvas
+    // (hover highlight, marquee selection).  These are cheap — a few
+    // rects — so they don't need the offscreen pass.
+    // ----------------------------------------------------------------
 
     // ---- Hover highlight ----
     const hov = hoverCellRef.current;
@@ -367,9 +430,6 @@ export function BaseBoardCanvas() {
     }
 
     // ---- Marquee selection rectangle ----
-    // clamp the live rect to [0, GRID_SIZE-1] so the dashed selection never
-    // extends outside the board boundary during a drag (mirrors the clamping
-    // already present in onPointerUp for the final selection commit).
     const p = pointerRef.current;
     if (p.marquee) {
       const x1 = clamp(Math.min(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
@@ -398,7 +458,6 @@ export function BaseBoardCanvas() {
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       const labelPad = 6;
-      // Width label: centered on top edge
       let wx = rx + rw / 2;
       let wy = ry - labelPad;
       if (wy < 0) wy = ry + labelPad;
@@ -407,7 +466,6 @@ export function BaseBoardCanvas() {
       ctx.strokeText(String(cols), wx, wy);
       ctx.fillStyle = "#0052ff";
       ctx.fillText(String(cols), wx, wy);
-      // Height label: centered on left edge
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
       let hx = rx - labelPad;
@@ -419,25 +477,6 @@ export function BaseBoardCanvas() {
       ctx.strokeText(String(rows), hx, hy);
       ctx.fillStyle = "#0052ff";
       ctx.fillText(String(rows), hx, hy);
-      ctx.restore();
-    }
-
-    // ---- Basket (tap-to-add multi-select) highlights ----
-    const basketIds = basketSetRef.current;
-    if (basketIds.size > 0) {
-      ctx.save();
-      ctx.fillStyle = "rgba(0,82,255,0.30)";
-      ctx.strokeStyle = "#0052ff";
-      ctx.lineWidth = Math.max(1, Math.min(3, cam.scale * 0.15));
-      basketIds.forEach((id) => {
-        const { x, y } = xyFromPlotId(id);
-        if (x < startX - 1 || x > endX + 1 || y < startY - 1 || y > endY + 1)
-          return;
-        const sx = cellToScreenX(x);
-        const sy = cellToScreenY(y);
-        ctx.fillRect(sx, sy, cam.scale, cam.scale);
-        if (cam.scale > 3) ctx.strokeRect(sx, sy, cam.scale, cam.scale);
-      });
       ctx.restore();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
