@@ -16,15 +16,18 @@ const L2_RESOLVER_ABI = [
 
 const BASE_RPCS = [
   "https://mainnet.base.org",
-  "https://base.llamarpc.com",
   "https://base.drpc.org",
 ];
 
-function getClient() {
-  return createPublicClient({
-    chain: base,
-    transport: http(BASE_RPCS[Math.floor(Math.random() * BASE_RPCS.length)]),
-  });
+async function withRetry<T>(fn: (rpc: string) => Promise<T>): Promise<T> {
+  for (const rpc of BASE_RPCS) {
+    try {
+      return await fn(rpc);
+    } catch (e) {
+      console.warn(`RPC ${rpc} failed, trying next:`, (e as any).shortMessage ?? "");
+    }
+  }
+  throw new Error(`All ${BASE_RPCS.length} Base RPCs failed`);
 }
 
 function coinTypeHex(chainId: number): string {
@@ -44,13 +47,15 @@ export async function GET(req: NextRequest) {
 
   try {
     if (address) {
-      const client = getClient();
-      const node = reverseNodeFor(address as `0x${string}`, base.id);
-      const name = await client.readContract({
-        address: RESOLVER_ADDRESS,
-        abi: L2_RESOLVER_ABI,
-        functionName: "name",
-        args: [node],
+      const name = await withRetry(async (rpc) => {
+        const client = createPublicClient({ chain: base, transport: http(rpc) });
+        const node = reverseNodeFor(address as `0x${string}`, base.id);
+        return client.readContract({
+          address: RESOLVER_ADDRESS,
+          abi: L2_RESOLVER_ABI,
+          functionName: "name",
+          args: [node],
+        });
       });
       return NextResponse.json({
         address,
@@ -63,14 +68,16 @@ export async function GET(req: NextRequest) {
         .split(",")
         .map((a) => a.trim())
         .filter((a) => a.startsWith("0x")) as `0x${string}`[]);
-      const client = getClient();
       const results = await Promise.allSettled(
         addresses.map((addr) =>
-          client.readContract({
-            address: RESOLVER_ADDRESS,
-            abi: L2_RESOLVER_ABI,
-            functionName: "name",
-            args: [reverseNodeFor(addr, base.id)],
+          withRetry(async (rpc) => {
+            const client = createPublicClient({ chain: base, transport: http(rpc) });
+            return client.readContract({
+              address: RESOLVER_ADDRESS,
+              abi: L2_RESOLVER_ABI,
+              functionName: "name",
+              args: [reverseNodeFor(addr, base.id)],
+            });
           }),
         ),
       );
