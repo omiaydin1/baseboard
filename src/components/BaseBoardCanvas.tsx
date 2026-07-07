@@ -52,6 +52,60 @@ const IMAGE_CACHE_MAX = 200; // max entries in imageCacheRef before LRU eviction
 const LOD_CACHE_MAX = 200;   // max entries in lodCacheRef before LRU eviction
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
 const STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
+const BOARD_CACHE_KEY = "baseboard:board-data";
+const BOARD_CACHE_TTL = 60_000; // 1 minute — short so fresh data loads eventually
+
+interface CachedBoardWire {
+  plots: Record<string, { owner: string; price: string; isForSale: boolean; imageUri: string }>;
+  timestamp: number;
+}
+
+function loadBoardCache(): Record<number, Plot> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(BOARD_CACHE_KEY);
+    if (!raw) return null;
+    const cached: CachedBoardWire = JSON.parse(raw);
+    if (Date.now() - cached.timestamp > BOARD_CACHE_TTL) return null;
+    const plots: Record<number, Plot> = {};
+    for (const [id, p] of Object.entries(cached.plots)) {
+      plots[Number(id)] = {
+        owner: p.owner as `0x${string}`,
+        price: BigInt(p.price),
+        isForSale: p.isForSale,
+        imageUri: p.imageUri,
+      };
+    }
+    return plots;
+  } catch {
+    return null;
+  }
+}
+
+function saveBoardCache(plots: Record<number, Plot>): void {
+  if (typeof window === "undefined") return;
+  try {
+    const serializable: Record<string, CachedBoardWire["plots"][string]> = {};
+    for (const [id, p] of Object.entries(plots)) {
+      serializable[id] = {
+        owner: p.owner,
+        price: p.price.toString(),
+        isForSale: p.isForSale,
+        imageUri: p.imageUri,
+      };
+    }
+    localStorage.setItem(
+      BOARD_CACHE_KEY,
+      JSON.stringify({ plots: serializable, timestamp: Date.now() } satisfies CachedBoardWire),
+    );
+  } catch { /* localStorage dolu / hata — best-effort */ }
+}
+
+const IPFS_GATEWAYS = [
+  (cid: string) => `https://dweb.link/ipfs/${cid}`,
+  (cid: string) => `https://nftstorage.link/ipfs/${cid}`,
+  (cid: string) => `https://ipfs.io/ipfs/${cid}`,
+];
 
 /**
  * High-performance, virtualized HTML5 canvas renderer for the 3162x3162 grid.
@@ -144,6 +198,9 @@ export function BaseBoardCanvas() {
   // Loaded plot data for the current viewport + image cache.
   const plotMapRef = useRef<Map<number, Plot>>(new Map());
   const imageCacheRef = useRef<Map<string, HTMLImageElement | "error">>(
+    new Map(),
+  );
+  const imageRetryRef = useRef<Map<string, { attempt: number; retryAt: number }>>(
     new Map(),
   );
   // Level-of-detail cache keyed by image content. Each entry holds a small
@@ -640,10 +697,6 @@ export function BaseBoardCanvas() {
         });
 
         groups.forEach((g) => {
-          const img = getImage(g.uri);
-          if (!img || img === "error" || !img.complete || img.naturalWidth === 0)
-            return;
-
           // Span: explicit zone bbox, else the cells sharing this image.
           const bx1 = g.zone ? g.zone.x1 : g.x1;
           const by1 = g.zone ? g.zone.y1 : g.y1;
@@ -660,6 +713,23 @@ export function BaseBoardCanvas() {
             by1 > endY + 1
           )
             return;
+
+          const img = getImage(g.uri);
+          if (!img || img === "error" || !img.complete || img.naturalWidth === 0) {
+            // Image not ready — draw a fallback coloured fill so the cell
+            // isn't invisible (white-on-white) while the image loads.
+            const isMine = g.owner === me;
+            ctx.fillStyle = isMine ? "#1d4ed8" : "#60a5fa";
+            for (const c of g.cells) {
+              ctx.fillRect(
+                Math.floor(cellToScreenX(c.x)),
+                Math.floor(cellToScreenY(c.y)),
+                Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0),
+                Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0),
+              );
+            }
+            return;
+          }
 
           // Floor the start and ceil the span so the image rect covers every
           // pixel that any part of the cells touch — no sub-pixel gaps.
@@ -710,11 +780,16 @@ export function BaseBoardCanvas() {
             } else if (g.zone) {
               // Clip to the owner's loaded cells inside the zone so the image
               // never bleeds onto plots they don't own.
+              // IMPORTANT: skip cells that have a DIFFERENT image — they
+              // belong to a different group and will be rendered separately.
               let clipped = 0;
+              const groupUri = stripZone(g.uri);
               map.forEach((p, id2) => {
                 if (p.owner.toLowerCase() !== g.owner) return;
                 const c = xyFromPlotId(id2);
                 if (c.x < bx1 || c.x > bx2 || c.y < by1 || c.y > by2) return;
+                // Skip cells that have a different image within this zone
+                if (p.imageUri && stripZone(p.imageUri) !== groupUri) return;
                 ctx.rect(
                   Math.floor(cellToScreenX(c.x)),
                   Math.floor(cellToScreenY(c.y)),
@@ -766,7 +841,7 @@ export function BaseBoardCanvas() {
           const bx2 = g.zone ? g.zone.x2 : g.x2;
           const by2 = g.zone ? g.zone.y2 : g.y2;
           if (bx2 < startX - 1 || bx1 > endX + 1 || by2 < startY - 1 || by1 > endY + 1) return;
-          nextUris.add(g.uri);
+          nextUris.add(stripZone(g.uri));
         });
         visibleImageUrisRef.current = nextUris;
       }
@@ -800,25 +875,55 @@ export function BaseBoardCanvas() {
   const getImage = useCallback(
     (uri: string): HTMLImageElement | "error" | null => {
       const cache = imageCacheRef.current;
-      const existing = cache.get(uri);
-      if (existing) return existing;
+      const key = stripZone(uri);
+      const existing = cache.get(key);
+      if (existing) {
+        if (existing !== "error") return existing;
+        const retryEntry = imageRetryRef.current.get(key);
+        if (retryEntry && retryEntry.retryAt > Date.now()) return "error";
+        cache.delete(key);
+        imageRetryRef.current.delete(key);
+      }
+
+      const retryEntry = imageRetryRef.current.get(key);
+      const attempt = retryEntry ? retryEntry.attempt + 1 : 0;
+
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.onload = () => {
+        // Only accept this image if the cache entry hasn't been replaced by
+        // a newer retry attempt (different gateway). Otherwise a stale preload
+        // image could overwrite a successfully-loaded gateway retry.
+        if (cache.get(key) === img || cache.get(key) === "error") {
+          cache.set(key, img);
+        }
+        imageRetryRef.current.delete(key);
         dirtyRef.current = true;
       };
       img.onerror = () => {
-        cache.set(uri, "error");
+        if (attempt < 3 && (uri.startsWith("ipfs://") || /^[a-zA-Z0-9]{46,}$/.test(uri))) {
+          const delays = [5_000, 15_000, 30_000];
+          const delay = delays[Math.min(attempt, delays.length - 1)];
+          imageRetryRef.current.set(key, { attempt, retryAt: Date.now() + delay });
+          cache.set(key, "error");
+          setTimeout(() => {
+            dirtyRef.current = true;
+          }, delay);
+        } else {
+          cache.set(key, "error");
+          imageRetryRef.current.delete(key);
+        }
+        dirtyRef.current = true;
       };
-      img.src = resolveUri(stripZone(uri));
-      cache.set(uri, img);
-      // Evict oldest non-visible entry when over the size limit so on-screen
-      // images are never purged and re-decoded mid-pan.
+      const gatewayIdx = Math.min(attempt, IPFS_GATEWAYS.length - 1);
+      img.src = resolveUri(key, gatewayIdx);
+      cache.set(key, img);
       if (cache.size > IMAGE_CACHE_MAX) {
         const visible = visibleImageUrisRef.current;
-        for (const key of cache.keys()) {
-          if (!visible.has(key)) {
-            cache.delete(key);
+        for (const k of cache.keys()) {
+          if (!visible.has(k)) {
+            cache.delete(k);
+            imageRetryRef.current.delete(k);
             break;
           }
         }
@@ -905,16 +1010,36 @@ export function BaseBoardCanvas() {
   const preloadImages = useCallback(
     (plots: Record<number, { imageUri: string }>) => {
       const cache = imageCacheRef.current;
-      for (const plot of Object.values(plots)) {
-        if (!plot.imageUri) continue;
-        const key = plot.imageUri;
+      const entries = Object.values(plots).filter((p) => p.imageUri);
+      // Round-robin across gateways so no single domain is slammed with all
+      // 158 connections at once. Each gateway handles ~53 images in parallel
+      // through its own 6-connection pool, cutting total time from ~53s to ~18s.
+      let seq = 0;
+      for (const plot of entries) {
+        const key = stripZone(plot.imageUri);
         if (cache.has(key)) continue;
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => { dirtyRef.current = true; };
-        img.onerror = () => { cache.set(key, "error"); };
-        img.src = resolveUri(stripZone(key));
-        cache.set(key, img);
+        const gatewayIdx = seq % IPFS_GATEWAYS.length;
+        const tryGateway = (g: number) => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.onload = () => {
+            cache.set(key, img);
+            dirtyRef.current = true;
+          };
+          img.onerror = () => {
+            const next = g + 1;
+            if (next < IPFS_GATEWAYS.length) {
+              tryGateway(next);
+            } else {
+              cache.set(key, "error");
+              dirtyRef.current = true;
+            }
+          };
+          img.src = resolveUri(key, g);
+          cache.set(key, img);
+        };
+        tryGateway(gatewayIdx);
+        seq++;
       }
     },
     [],
@@ -1053,6 +1178,20 @@ export function BaseBoardCanvas() {
   // Fetch all owned plots from Turso (the primary data source).
   const fetchFromTurso = useCallback(async () => {
     if (!cfg.isConfigured) return;
+
+    // Cache'den anında yükle — resimler 15-30sn beklemek yerine hemen preload başlasın
+    const cached = loadBoardCache();
+    if (cached && Object.keys(cached).length > 0) {
+      const map = plotMapRef.current;
+      Object.entries(cached).forEach(([id, plot]) => {
+        map.set(Number(id), plot);
+      });
+      Object.keys(cached).forEach((id) => allMintedRef.current.add(Number(id)));
+      preloadImages(cached);
+      dirtyRef.current = true;
+      forceTick((t) => t + 1);
+    }
+
     const res = await fetchTursoBoard(undefined);
     if (!res?.fromCache) return;
     const map = plotMapRef.current;
@@ -1065,6 +1204,8 @@ export function BaseBoardCanvas() {
     Object.keys(res.plots).forEach((id) => allMintedRef.current.add(Number(id)));
     // Pre-decode all images so the render loop never waits for a lazy load.
     preloadImages(res.plots);
+    // Taze veriyi localStorage'e yaz
+    saveBoardCache(res.plots);
     dirtyRef.current = true;
     forceTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1080,9 +1221,9 @@ export function BaseBoardCanvas() {
   //
   // On the FIRST call we only scan the most recent RPC_FALLBACK_INITIAL_WINDOW
   // blocks (≈1-2 weeks) so the board is interactive in seconds instead of
-  // waiting for a full multi-million-block scan.  The 15-second staleness
-  // interval forwards the cursor from there, catching the remaining history in
-  // the background.
+  // waiting for a full multi-million-block scan.  After the initial scan, a
+  // background backfill scans the remaining history in chunks.
+  const backfillRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rpcFallback = useCallback(async () => {
     if (!publicClient || !cfg.isConfigured) return;
     try {
@@ -1154,6 +1295,63 @@ export function BaseBoardCanvas() {
         } catch { /* keep prior data */ }
       }
 
+      // 3) Backfill: if first run only scanned recent window, schedule a
+      //    background backfill for the remaining history. This ensures old
+      //    plots are discovered even if Turso was unavailable.
+      if (firstRun && fromBlock > cfg.deployBlock) {
+        const backfillRange = fromBlock - cfg.deployBlock;
+        const backfillChunks = Math.ceil(backfillRange / LOG_CHUNK);
+        let chunkIdx = 0;
+        const doBackfill = () => {
+          if (chunkIdx >= backfillChunks) return;
+          const end = fromBlock - 1 - chunkIdx * LOG_CHUNK;
+          const start = Math.max(cfg.deployBlock, end - LOG_CHUNK + 1);
+          chunkIdx++;
+          void (async () => {
+            try {
+              const logs = await publicClient.getContractEvents({
+                address: cfg.contract,
+                abi: baseBoardAbi,
+                eventName: "PlotsPurchased",
+                fromBlock: BigInt(start),
+                toBlock: BigInt(end),
+              });
+              logs.forEach((log: { args?: { plotIds?: readonly bigint[] } }) => {
+                const args = log.args;
+                args?.plotIds?.forEach((b) => {
+                  const id = Number(b);
+                  if (!allMintedRef.current.has(id)) {
+                    allMintedRef.current.add(id);
+                    // Immediately batch-read newly discovered standalone plots
+                    void (async () => {
+                      try {
+                        const res = (await readContractWithTimeout(
+                          publicClient.readContract({
+                            address: cfg.contract,
+                            abi: baseBoardAbi,
+                            functionName: "getPlotsBatch",
+                            args: [[BigInt(id)]],
+                          }),
+                        )) as readonly Plot[];
+                        const p = res[0];
+                        if (p && p.owner.toLowerCase() !== ZERO_ADDRESS) {
+                          map.set(id, p);
+                          preloadImages({ [id]: p });
+                          dirtyRef.current = true;
+                          forceTick((t) => t + 1);
+                        }
+                      } catch { /* skip */ }
+                    })();
+                  }
+                });
+              });
+            } catch { /* skip failed chunk */ }
+            backfillRef.current = setTimeout(doBackfill, 100);
+          })();
+        };
+        doBackfill();
+      }
+
       if (densityEnabledRef.current) bakeDensity();
       dirtyRef.current = true;
       forceTick((t) => t + 1);
@@ -1184,8 +1382,10 @@ export function BaseBoardCanvas() {
     allMintedRef.current.clear();
     densityCanvasRef.current = null;
     imageCacheRef.current.clear();
+    imageRetryRef.current.clear();
     lodCacheRef.current.clear();
     visibleImageUrisRef.current.clear();
+    if (backfillRef.current) clearTimeout(backfillRef.current);
     clearOptimisticPlots();
     dirtyRef.current = true;
     forceTick((t) => t + 1);
@@ -1762,13 +1962,14 @@ export function BaseBoardCanvas() {
 }
 
 /** Resolve ipfs:// URIs (and bare CIDs) to an HTTP gateway. */
-function resolveUri(uri: string): string {
+function resolveUri(uri: string, gatewayIdx = 0): string {
   if (!uri) return uri;
   if (uri.startsWith("ipfs://")) {
-    return `https://ipfs.io/ipfs/${uri.slice("ipfs://".length)}`;
+    const cid = uri.slice("ipfs://".length);
+    return IPFS_GATEWAYS[Math.min(gatewayIdx, IPFS_GATEWAYS.length - 1)](cid);
   }
   if (/^[a-zA-Z0-9]{46,}$/.test(uri) && !uri.startsWith("http")) {
-    return `https://ipfs.io/ipfs/${uri}`;
+    return IPFS_GATEWAYS[Math.min(gatewayIdx, IPFS_GATEWAYS.length - 1)](uri);
   }
   return uri;
 }

@@ -17,6 +17,8 @@ const L2_RESOLVER_ABI = [
 const BASE_RPCS = [
   "https://mainnet.base.org",
   "https://base.drpc.org",
+  "https://base-rpc.publicnode.com",
+  "https://base.llamarpc.com",
 ];
 
 async function withRetry<T>(fn: (rpc: string) => Promise<T>): Promise<T> {
