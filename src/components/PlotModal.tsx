@@ -14,7 +14,7 @@ import {
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi } from "@/lib/contract";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
-import { parseLink, stripZone } from "@/lib/image";
+import { parseLink, parseZone, stripZone } from "@/lib/image";
 import { ZERO_ADDRESS } from "@/lib/constants";
 import type { Plot } from "@/lib/types";
 import { fetchTursoBoard } from "@/lib/tursoClient";
@@ -40,11 +40,35 @@ export function PlotModal() {
     if (activePlotId == null) return;
     setTursoPlot("loading");
     let cancelled = false;
-    fetchTursoBoard([activePlotId]).then((res) => {
+
+    const fetch = async () => {
+      const res = await fetchTursoBoard([activePlotId]);
       if (cancelled) return;
-      const p = res?.plots?.[activePlotId] ?? null;
-      setTursoPlot(p);
-    });
+      let p: Plot | null = res?.plots?.[activePlotId] ?? null;
+
+      // If the plot is owned but has no imageUri, check if the owner has a
+      // zone image (via #bb=x1,y1,x2,y2 fragment) that covers this pixel.
+      if (p && p.owner.toLowerCase() !== ZERO_ADDRESS.toLowerCase() && !p.imageUri) {
+        const owner = p.owner.toLowerCase();
+        const allRes = await fetchTursoBoard();
+        if (cancelled) return;
+        if (allRes) {
+          const { x, y } = xyFromPlotId(activePlotId);
+          for (const plot of Object.values(allRes.plots)) {
+            if (plot.owner.toLowerCase() !== owner || !plot.imageUri) continue;
+            const zone = parseZone(plot.imageUri);
+            if (zone && x >= zone.x1 && x <= zone.x2 && y >= zone.y1 && y <= zone.y2) {
+              p = { ...p, imageUri: plot.imageUri };
+              break;
+            }
+          }
+        }
+      }
+
+      if (!cancelled) setTursoPlot(p);
+    };
+
+    fetch();
     return () => { cancelled = true; };
   }, [activePlotId]);
 
