@@ -1197,6 +1197,41 @@ export function BaseBoardCanvas() {
   });
 
   // -------------------------------------------------------------------
+  // Real-time ImageUpdated event watcher (instant image update)
+  // -------------------------------------------------------------------
+  useWatchContractEvent({
+    address: cfg.isConfigured ? cfg.contract : undefined,
+    abi: baseBoardAbi,
+    eventName: "ImageUpdated",
+    onLogs(logs: { args?: { plotId?: bigint; owner?: `0x${string}`; imageUri?: string } }[]) {
+      if (logs.length === 0) return;
+      const map = plotMapRef.current;
+      let changed = false;
+      logs.forEach((log) => {
+        const args = log.args;
+        if (!args?.plotId || args.imageUri == null) return;
+        const id = Number(args.plotId);
+        const existing = map.get(id);
+        if (existing) {
+          map.set(id, { ...existing, imageUri: args.imageUri });
+          changed = true;
+        }
+      });
+      if (!changed) return;
+      // Preload the updated images
+      const updatedPlots: Record<number, { imageUri: string }> = {};
+      logs.forEach((log) => {
+        const args = log.args;
+        if (!args?.plotId || args.imageUri == null) return;
+        updatedPlots[Number(args.plotId)] = { imageUri: args.imageUri };
+      });
+      preloadImages(updatedPlots);
+      dirtyRef.current = true;
+      forceTick((t) => t + 1);
+    },
+  });
+
+  // -------------------------------------------------------------------
   // Turso-only data loading (no RPC reads in the frontend)
   // -------------------------------------------------------------------
   const lastSuccessfulFetchRef = useRef(0);
