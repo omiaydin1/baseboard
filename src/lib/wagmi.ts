@@ -5,6 +5,7 @@ import {
   cookieStorage,
   type CreateConnectorFn,
 } from "wagmi";
+import { fallback } from "viem";
 import { base, hardhat } from "wagmi/chains";
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
 import { APP_LOGO_URL, APP_URL, DEV_LOCAL, WALLETCONNECT_PROJECT_ID } from "./constants";
@@ -163,14 +164,13 @@ export function getWagmiConfig() {
     ...shared,
     chains: [base],
     transports: {
-      // Bounded timeout + bounded retries so a slow/unreachable RPC fails fast
-      // instead of hanging indefinitely inside the BaseApp / Coinbase Wallet
-      // in-app webview (where there is no devtools to recover a stuck request).
-      [base.id]: http(undefined, {
-        timeout: 10_000,
-        retryCount: 2,
-        retryDelay: 800,
-      }),
+      // Fallback across multiple RPCs so a single outage never blocks the app.
+      // The first RPC in the list is tried first; on failure the next is used.
+      [base.id]: fallback([
+        http("https://api.developer.coinbase.com/rpc/v1/base/A9A5uvKtQoPuhzJ42DUmgIb7ocEID6Km", { timeout: 10_000 }),
+        http("https://base-rpc.publicnode.com", { timeout: 10_000 }),
+        http("https://base.llamarpc.com", { timeout: 10_000 }),
+      ], { rank: false }),
     },
     // ERC-8021 attribution applied to the Base client.
     dataSuffix: {

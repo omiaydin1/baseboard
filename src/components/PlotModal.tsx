@@ -8,10 +8,8 @@ import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
 import { useBoardStore } from "@/store/useBoardStore";
 import {
-  usePlot,
   useOffer,
   useBaseBoardWrite,
-  useCoveringImage,
 } from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi } from "@/lib/contract";
@@ -28,11 +26,6 @@ export function PlotModal() {
   const { address, isConnected } = useAccount();
 
   const cfg = useActiveChainConfig();
-  const {
-    plot: rpcPlot,
-    isOwned: rpcOwned,
-    isLoading: rpcLoading,
-  } = usePlot(activePlotId);
   const { data: myOfferRaw } = useOffer(activePlotId, address);
   const { writeContractAsync, status, error, reset } = useBaseBoardWrite();
 
@@ -40,20 +33,7 @@ export function PlotModal() {
   const [txError, setTxError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // ---------------------------------------------------------------------------
-  // Phase 2: Turso provisional + RPC authoritative
-  //
-  // Source-of-truth rule: RPC always wins over Turso when they conflict. Turso
-  // is a fast preview layer only — it may lag behind the chain (indexer delay).
-  // It provides instant display while RPC is in flight, but is never the final
-  // word on ownership.
-  //
-  // States:
-  //   "loading"        — both Turso and RPC are still pending. Show spinner.
-  //   "provisional"    — Turso has data, RPC hasn't resolved yet. Show Turso
-  //                      data, but NEVER label it "unowned" based on Turso alone.
-  //   "final"          — RPC has resolved. Show RPC result authoritatively.
-  // ---------------------------------------------------------------------------
+  // Turso-only data (no RPC reads)
   const [tursoPlot, setTursoPlot] = useState<Plot | null | "loading">("loading");
 
   useEffect(() => {
@@ -68,65 +48,26 @@ export function PlotModal() {
     return () => { cancelled = true; };
   }, [activePlotId]);
 
-  // RPC is considered "resolved" when it has returned data or definitively
-  // failed (isLoading turned false). We use `rpcPlot != null` as "has data".
-  const rpcHasData = rpcPlot != null;
-  const rpcDone = !rpcLoading || rpcHasData;
-  const tursoHasData = tursoPlot !== "loading" && tursoPlot !== null;
-  // Determine display phase and effective plot.
-  //   - "final": RPC has resolved. Use RPC as authoritative source.
-  //   - "provisional": RPC is still pending, Turso has data. Show Turso as
-  //     fast preview, but NEVER declare it "unowned" based on Turso alone.
-  //   - "loading": RPC is still pending, no Turso data. Show loading spinner.
-  const phase:
-    | "loading"
-    | "provisional"
-    | "final" = rpcDone
-    ? "final"
-    : tursoHasData
-      ? "provisional"
-      : "loading";
+  // Sync Turso data back to the canvas so image URI changes are reflected
+  // on the board (push via optimistic overrides).
+  useEffect(() => {
+    if (activePlotId == null || !tursoPlot || tursoPlot === "loading") return;
+    useBoardStore.getState().applyOptimisticPlots({ [activePlotId]: tursoPlot });
+  }, [tursoPlot, activePlotId]);
 
-  // RPC is authoritative; fall back to Turso when RPC hasn't resolved yet.
-  const effectivePlot: Plot | null = rpcHasData
-    ? rpcPlot
-    : tursoHasData
-      ? (tursoPlot as Plot)
-      : null;
-
-  // Only RPC can declare a plot truly unowned:
-  //   - If phase is "final" and RPC says unowned → show unowned.
-  //   - If phase is "provisional" and Turso says unowned → show loading/pending.
-  //   - If phase is "loading" → show loading spinner.
-  const effectiveOwned =
-    phase === "final"
-      ? rpcOwned
-      : phase === "provisional"
-        ? !!effectivePlot &&
-          effectivePlot.owner.toLowerCase() !== ZERO_ADDRESS
-        : false;
+  const loading = tursoPlot === "loading";
+  const effectivePlot: Plot | null = tursoPlot && tursoPlot !== "loading" ? tursoPlot : null;
+  const effectiveOwned = !!effectivePlot && effectivePlot.owner.toLowerCase() !== ZERO_ADDRESS;
 
   const open = activePlotId != null;
   const coords = activePlotId != null ? xyFromPlotId(activePlotId) : null;
   const myOffer = (myOfferRaw as bigint | undefined) ?? 0n;
 
-  // The plot's own image/link (set when this plot is the anchor of an image).
+  // The plot's own image/link
   const ownImage = effectivePlot?.imageUri ? stripZone(effectivePlot.imageUri) : null;
   const ownLink = effectivePlot?.imageUri ? parseLink(effectivePlot.imageUri) : null;
-
-  // A multi-plot image lives only on its anchor plot; any other covered pixel
-  // carries no metadata. Resolve the spanning image/link covering this pixel so
-  // clicking ANY pixel under a batch image shows the same destination link.
-  const needCover = !!effectivePlot && !!coords && (!ownImage || !ownLink);
-  const covering = useCoveringImage(
-    effectivePlot?.owner,
-    coords?.x ?? null,
-    coords?.y ?? null,
-    needCover,
-  );
-  const displayImage =
-    ownImage || (covering.imageUri ? stripZone(covering.imageUri) : null);
-  const plotLink = ownLink || covering.link;
+  const displayImage = ownImage;
+  const plotLink = ownLink;
 
   const isOwner =
     !!effectivePlot &&
@@ -187,9 +128,6 @@ export function PlotModal() {
       }),
     );
 
-  // Shareable deep link that re-opens THIS pixel's detail modal on load
-  // (read by the app's `?pixel=<id>` handler), available for every owned pixel
-  // regardless of whether it has a custom image/link set.
   const pixelShareUrl = () =>
     typeof window !== "undefined"
       ? `${window.location.origin}/?pixel=${activePlotId}`
@@ -209,7 +147,6 @@ export function PlotModal() {
     try {
       await navigator.clipboard.writeText(url);
     } catch {
-      // Fallback for browsers without the async clipboard API.
       const el = document.createElement("textarea");
       el.value = url;
       el.style.position = "fixed";
@@ -218,9 +155,7 @@ export function PlotModal() {
       el.select();
       try {
         document.execCommand("copy");
-      } catch {
-        /* clipboard unavailable — nothing else to try */
-      }
+      } catch { /* clipboard unavailable */ }
       document.body.removeChild(el);
     }
     setCopied(true);
@@ -244,15 +179,9 @@ export function PlotModal() {
             </p>
           </div>
 
-          {phase === "loading" ? (
+          {loading ? (
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <Spinner size={16} /> Loading pixel…
-            </div>
-          ) : phase === "provisional" && !effectiveOwned ? (
-            // Turso says unowned but we haven't heard from RPC yet — never show
-            // a hard "unowned" on Turso alone. Show a pending loader instead.
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <Spinner size={16} /> Confirming ownership…
             </div>
           ) : !effectiveOwned ? (
             <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
@@ -311,8 +240,6 @@ export function PlotModal() {
                 )}
               </dl>
 
-              {/* Share / copy-link — secondary actions available on every owned
-                  pixel, independent of whether it has an image/link set. */}
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -360,7 +287,6 @@ export function PlotModal() {
                 </button>
               ) : (
                 <div className="space-y-3">
-                  {/* Buy Now (only when listed) */}
                   {effectivePlot?.isForSale && (
                     <button
                       type="button"
@@ -378,7 +304,6 @@ export function PlotModal() {
                     </button>
                   )}
 
-                  {/* Place / manage offer */}
                   <div className="rounded-xl border-2 border-blue-100 p-3">
                     <p className="mb-2 text-sm font-semibold text-slate-700">
                       {effectivePlot?.isForSale

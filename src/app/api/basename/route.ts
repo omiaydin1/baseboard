@@ -1,94 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
-import { http, createPublicClient, keccak256, namehash, encodePacked } from "viem";
-import { base } from "viem/chains";
-
-const RESOLVER_ADDRESS = "0xC6d566A56A1aFf6508b41f6c90ff131615583BCD";
-
-const L2_RESOLVER_ABI = [
-  {
-    inputs: [{ internalType: "bytes32", name: "node", type: "bytes32" }],
-    name: "name",
-    outputs: [{ internalType: "string", name: "", type: "string" }],
-    stateMutability: "view",
-    type: "function",
-  },
-] as const;
-
-const BASE_RPCS = [
-  "https://mainnet.base.org",
-  "https://base.drpc.org",
-  "https://base-rpc.publicnode.com",
-  "https://base.llamarpc.com",
-];
-
-async function withRetry<T>(fn: (rpc: string) => Promise<T>): Promise<T> {
-  for (const rpc of BASE_RPCS) {
-    try {
-      return await fn(rpc);
-    } catch (e) {
-      console.warn(`RPC ${rpc} failed, trying next:`, (e as any).shortMessage ?? "");
-    }
-  }
-  throw new Error(`All ${BASE_RPCS.length} Base RPCs failed`);
-}
-
-function coinTypeHex(chainId: number): string {
-  const cointype = (2147483648 | chainId) >>> 0;
-  return cointype.toString(16).toUpperCase();
-}
-
-function reverseNodeFor(address: `0x${string}`, chainId: number): `0x${string}` {
-  const addressNode = keccak256(address.toLowerCase().slice(2));
-  const baseReverseNode = namehash(`${coinTypeHex(chainId)}.reverse`);
-  return keccak256(encodePacked(["bytes32", "bytes32"], [baseReverseNode, addressNode]));
-}
+import { getTursoClient, getBasenames } from "@/lib/turso";
 
 export async function GET(req: NextRequest) {
   const address = req.nextUrl.searchParams.get("address");
   const addressesParam = req.nextUrl.searchParams.get("addresses");
 
   try {
+    const turso = await getTursoClient();
+    if (!turso) {
+      return NextResponse.json(
+        { error: "Turso not configured" },
+        { status: 503 },
+      );
+    }
+
     if (address) {
-      const name = await withRetry(async (rpc) => {
-        const client = createPublicClient({ chain: base, transport: http(rpc) });
-        const node = reverseNodeFor(address as `0x${string}`, base.id);
-        return client.readContract({
-          address: RESOLVER_ADDRESS,
-          abi: L2_RESOLVER_ABI,
-          functionName: "name",
-          args: [node],
-        });
-      });
+      const addr = address.toLowerCase();
+      const cached = await getBasenames(turso, [addr]);
       return NextResponse.json({
-        address,
-        name: name && name.length > 0 ? name : null,
+        address: addr,
+        name: cached.get(addr) ?? null,
       });
     }
 
     if (addressesParam) {
-      const addresses = (addressesParam
+      const rawAddresses = addressesParam
         .split(",")
         .map((a) => a.trim())
-        .filter((a) => a.startsWith("0x")) as `0x${string}`[]);
-      const results = await Promise.allSettled(
-        addresses.map((addr) =>
-          withRetry(async (rpc) => {
-            const client = createPublicClient({ chain: base, transport: http(rpc) });
-            return client.readContract({
-              address: RESOLVER_ADDRESS,
-              abi: L2_RESOLVER_ABI,
-              functionName: "name",
-              args: [reverseNodeFor(addr, base.id)],
-            });
-          }),
-        ),
-      );
+        .filter((a) => a.startsWith("0x"));
+      const cached = await getBasenames(turso, rawAddresses);
       const names: Record<string, string | null> = {};
-      for (let i = 0; i < addresses.length; i++) {
-        const value =
-          results[i].status === "fulfilled" ? results[i].value : "";
-        names[addresses[i].toLowerCase()] =
-          value && value.length > 0 ? value : null;
+      for (const a of rawAddresses) {
+        const key = a.toLowerCase();
+        names[key] = cached.get(key) ?? null;
       }
       return NextResponse.json({ names });
     }
@@ -99,15 +43,7 @@ export async function GET(req: NextRequest) {
     );
   } catch (err) {
     const e = err as any;
-    const detail = [
-      "msg:", e.message,
-      "| shortMessage:", e.shortMessage,
-      "| cause:", e.cause?.message,
-      "| code:", e.code,
-      "| details:", e.details,
-      "| name:", e.name,
-    ].join(" ");
-    console.error("Basename API error:", detail);
-    return NextResponse.json({ error: "Resolution failed", detail }, { status: 500 });
+    console.error("Basename API error:", e.message ?? e);
+    return NextResponse.json({ error: "Resolution failed" }, { status: 500 });
   }
 }

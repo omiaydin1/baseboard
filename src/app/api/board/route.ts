@@ -24,7 +24,8 @@ interface BoardResponse {
  * configured.
  *
  * GET /api/board?ids=1,2,3
- * GET /api/board?ids=all   — returns ALL owned plots
+ * GET /api/board?ids=all            — returns ALL owned plots
+ * GET /api/board?ids=all&since=123  — only plots updated after timestamp
  */
 export async function GET(req: NextRequest) {
   if (!isTursoConfigured()) {
@@ -37,12 +38,14 @@ export async function GET(req: NextRequest) {
   }
 
   const idsParam = req.nextUrl.searchParams.get("ids");
+  const sinceParam = req.nextUrl.searchParams.get("since");
 
   try {
     let rows: Awaited<ReturnType<typeof getPlotBatch>>;
 
     if (idsParam === "all") {
-      rows = await getAllPlots(client);
+      const since = sinceParam ? Number(sinceParam) : undefined;
+      rows = await getAllPlots(client, since);
     } else {
       if (!idsParam) {
         return NextResponse.json(

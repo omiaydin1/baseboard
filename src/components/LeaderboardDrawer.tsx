@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { Drawer } from "./Drawer";
 import { Spinner } from "./Spinner";
@@ -84,7 +84,9 @@ export function LeaderboardDrawer() {
   const cfg = useActiveChainConfig();
   const { address } = useAccount();
   const { loading, ranking } = useAllMintedContext();
-  const age = useLeaderboardAge();
+  const serverAge = useLeaderboardAge();
+  const [age, setAge] = useState("");
+  useEffect(() => setAge(serverAge), [serverAge]);
 
   const me = address?.toLowerCase();
   const myEntry = useMemo(

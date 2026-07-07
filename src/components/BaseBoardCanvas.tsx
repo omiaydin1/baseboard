@@ -37,7 +37,6 @@ const MAX_SCALE = 48;
 const GRID_FADE_START = 4; // px/cell where grid lines begin to appear
 const GRID_FADE_FULL = 12; // px/cell where grid lines are fully opaque
 const IMAGE_MIN_SCALE = 6; // px/cell before images are drawn
-const RPC_FALLBACK_INITIAL_WINDOW = 100_000; // blocks (≈1-2 weeks) on first RPC scan
 const LOD_THUMB_DIM = 128; // longest side of the cached LOD thumbnail
 // Above this many on-screen image groups we always blit the cheap LOD
 // thumbnail instead of the full-resolution source, even when zoomed in.
@@ -887,20 +886,19 @@ export function BaseBoardCanvas() {
 
       const retryEntry = imageRetryRef.current.get(key);
       const attempt = retryEntry ? retryEntry.attempt + 1 : 0;
+      const TIMEOUT_MS = 30_000;
 
       const img = new Image();
       img.crossOrigin = "anonymous";
-      img.onload = () => {
-        // Only accept this image if the cache entry hasn't been replaced by
-        // a newer retry attempt (different gateway). Otherwise a stale preload
-        // image could overwrite a successfully-loaded gateway retry.
-        if (cache.get(key) === img || cache.get(key) === "error") {
-          cache.set(key, img);
-        }
-        imageRetryRef.current.delete(key);
-        dirtyRef.current = true;
-      };
-      img.onerror = () => {
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        img.src = "";
+        handleError();
+      }, TIMEOUT_MS);
+
+      const handleError = () => {
+        clearTimeout(timer);
         if (attempt < 3 && (uri.startsWith("ipfs://") || /^[a-zA-Z0-9]{46,}$/.test(uri))) {
           const delays = [5_000, 15_000, 30_000];
           const delay = delays[Math.min(attempt, delays.length - 1)];
@@ -915,6 +913,18 @@ export function BaseBoardCanvas() {
         }
         dirtyRef.current = true;
       };
+
+      img.onload = () => {
+        clearTimeout(timer);
+        if (!timedOut) {
+          if (cache.get(key) === img || cache.get(key) === "error") {
+            cache.set(key, img);
+          }
+          imageRetryRef.current.delete(key);
+          dirtyRef.current = true;
+        }
+      };
+      img.onerror = handleError;
       const gatewayIdx = Math.min(attempt, IPFS_GATEWAYS.length - 1);
       img.src = resolveUri(key, gatewayIdx);
       cache.set(key, img);
@@ -1006,27 +1016,28 @@ export function BaseBoardCanvas() {
    * Pre-decode images into the shared cache so the render loop never waits
    * for a lazy load. Called after every Turso fetch so new images are ready
    * on the very first frame they appear.
+   *
+   * Each request has a 30-second timeout so stalled IPFS gateways are
+   * retried on the next gateway instead of hanging indefinitely.
    */
   const preloadImages = useCallback(
     (plots: Record<number, { imageUri: string }>) => {
       const cache = imageCacheRef.current;
-      const entries = Object.values(plots).filter((p) => p.imageUri);
-      // Round-robin across gateways so no single domain is slammed with all
-      // 158 connections at once. Each gateway handles ~53 images in parallel
-      // through its own 6-connection pool, cutting total time from ~53s to ~18s.
+      const TIMEOUT_MS = 30_000;
       let seq = 0;
-      for (const plot of entries) {
-        const key = stripZone(plot.imageUri);
+      for (const plot of Object.values(plots)) {
+        const uri = plot.imageUri;
+        if (!uri) continue;
+        const key = stripZone(uri);
         if (cache.has(key)) continue;
-        const gatewayIdx = seq % IPFS_GATEWAYS.length;
+        const gatewayIdx = seq++ % IPFS_GATEWAYS.length;
         const tryGateway = (g: number) => {
           const img = new Image();
           img.crossOrigin = "anonymous";
-          img.onload = () => {
-            cache.set(key, img);
-            dirtyRef.current = true;
-          };
-          img.onerror = () => {
+          let timedOut = false;
+          const timer = setTimeout(() => {
+            timedOut = true;
+            img.src = "";
             const next = g + 1;
             if (next < IPFS_GATEWAYS.length) {
               tryGateway(next);
@@ -1034,12 +1045,30 @@ export function BaseBoardCanvas() {
               cache.set(key, "error");
               dirtyRef.current = true;
             }
+          }, TIMEOUT_MS);
+          img.onload = () => {
+            clearTimeout(timer);
+            if (!timedOut) {
+              cache.set(key, img);
+              dirtyRef.current = true;
+            }
+          };
+          img.onerror = () => {
+            clearTimeout(timer);
+            if (!timedOut) {
+              const next = g + 1;
+              if (next < IPFS_GATEWAYS.length) {
+                tryGateway(next);
+              } else {
+                cache.set(key, "error");
+                dirtyRef.current = true;
+              }
+            }
           };
           img.src = resolveUri(key, g);
           cache.set(key, img);
         };
         tryGateway(gatewayIdx);
-        seq++;
       }
     },
     [],
@@ -1168,10 +1197,9 @@ export function BaseBoardCanvas() {
   });
 
   // -------------------------------------------------------------------
-  // Turso-first data loading
+  // Turso-only data loading (no RPC reads in the frontend)
   // -------------------------------------------------------------------
   const lastSuccessfulFetchRef = useRef(0);
-  const lastRpcFallbackBlockRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [stalenessSec, setStalenessSec] = useState(0);
 
@@ -1186,13 +1214,13 @@ export function BaseBoardCanvas() {
       Object.entries(cached).forEach(([id, plot]) => {
         map.set(Number(id), plot);
       });
-      Object.keys(cached).forEach((id) => allMintedRef.current.add(Number(id)));
       preloadImages(cached);
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     }
 
-    const res = await fetchTursoBoard(undefined);
+    const since = lastSuccessfulFetchRef.current > 0 ? lastSuccessfulFetchRef.current : undefined;
+    const res = await fetchTursoBoard(undefined, undefined, since);
     if (!res?.fromCache) return;
     const map = plotMapRef.current;
     Object.entries(res.plots).forEach(([id, plot]) => {
@@ -1200,174 +1228,28 @@ export function BaseBoardCanvas() {
     });
     lastSuccessfulFetchRef.current = Date.now();
     setStalenessSec(0);
-    // Seed the known-minted set from Turso data so rpcFallback can refresh them.
-    Object.keys(res.plots).forEach((id) => allMintedRef.current.add(Number(id)));
-    // Pre-decode all images so the render loop never waits for a lazy load.
     preloadImages(res.plots);
-    // Taze veriyi localStorage'e yaz
-    saveBoardCache(res.plots);
+    if (since) {
+      const existing = loadBoardCache();
+      if (existing) {
+        Object.assign(existing, res.plots);
+        saveBoardCache(existing);
+      }
+    } else {
+      saveBoardCache(res.plots);
+    }
     dirtyRef.current = true;
     forceTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.isConfigured]);
 
-  // Track all known minted plot IDs discovered from PlotsPurchased logs so
-  // rpcFallback can batch-read their state even when Turso is not configured.
-  const allMintedRef = useRef<Set<number>>(new Set());
-
-  // RPC fallback: scan PlotsPurchased logs to discover minted plot IDs, then
-  // batch-read their current on-chain state. Called on mount (after Turso
-  // fetch) and when Turso data is >5 min stale.
-  //
-  // On the FIRST call we only scan the most recent RPC_FALLBACK_INITIAL_WINDOW
-  // blocks (≈1-2 weeks) so the board is interactive in seconds instead of
-  // waiting for a full multi-million-block scan.  After the initial scan, a
-  // background backfill scans the remaining history in chunks.
-  const backfillRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rpcFallback = useCallback(async () => {
-    if (!publicClient || !cfg.isConfigured) return;
-    try {
-      const latest = Number(await publicClient.getBlockNumber());
-      const firstRun = lastRpcFallbackBlockRef.current === 0;
-      let fromBlock = firstRun
-        ? Math.max(cfg.deployBlock, latest - RPC_FALLBACK_INITIAL_WINDOW)
-        : lastRpcFallbackBlockRef.current + 1;
-
-      // 1) Discover new plot IDs from PlotsPurchased logs.
-      const LOG_CHUNK = 9_500;
-      const freshIds: number[] = [];
-      for (let start = fromBlock; start <= latest; start += LOG_CHUNK + 1) {
-        const end = Math.min(start + LOG_CHUNK, latest);
-        try {
-          const logs = await publicClient.getContractEvents({
-            address: cfg.contract,
-            abi: baseBoardAbi,
-            eventName: "PlotsPurchased",
-            fromBlock: BigInt(start),
-            toBlock: BigInt(end),
-          });
-          logs.forEach((log: { args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint }) => {
-            const blk = Number(log.blockNumber ?? 0n);
-            const args = log.args;
-            args?.plotIds?.forEach((b) => {
-              const id = Number(b);
-              purchaseBlockRef.current.set(id, blk);
-              if (!allMintedRef.current.has(id)) {
-                allMintedRef.current.add(id);
-                freshIds.push(id);
-              }
-            });
-          });
-        } catch { /* skip failed chunk */ }
-      }
-      lastRpcFallbackBlockRef.current = latest;
-      latestBlockRef.current = latest;
-
-      // 2) Batch-read current state for ALL known plot IDs (previously known
-      //    from Turso AND newly discovered from logs).
-      const allIds = Array.from(allMintedRef.current);
-      const map = plotMapRef.current;
-      const READ_CHUNK = 400;
-      for (let i = 0; i < allIds.length; i += READ_CHUNK) {
-        const slice = allIds.slice(i, i + READ_CHUNK);
-        try {
-          const res = (await readContractWithTimeout(
-            publicClient.readContract({
-              address: cfg.contract,
-              abi: baseBoardAbi,
-              functionName: "getPlotsBatch",
-              args: [slice.map((n) => BigInt(n))],
-            }),
-          )) as readonly Plot[];
-          const fresh: Record<number, Plot> = {};
-          res.forEach((plot, j) => {
-            const id = slice[j];
-            if (plot.owner.toLowerCase() !== ZERO_ADDRESS) {
-              map.set(id, plot);
-              fresh[id] = plot;
-            } else {
-              map.delete(id);
-            }
-          });
-          preloadImages(fresh);
-          dirtyRef.current = true;
-          forceTick((t) => t + 1);
-        } catch { /* keep prior data */ }
-      }
-
-      // 3) Backfill: if first run only scanned recent window, schedule a
-      //    background backfill for the remaining history. This ensures old
-      //    plots are discovered even if Turso was unavailable.
-      if (firstRun && fromBlock > cfg.deployBlock) {
-        const backfillRange = fromBlock - cfg.deployBlock;
-        const backfillChunks = Math.ceil(backfillRange / LOG_CHUNK);
-        let chunkIdx = 0;
-        const doBackfill = () => {
-          if (chunkIdx >= backfillChunks) return;
-          const end = fromBlock - 1 - chunkIdx * LOG_CHUNK;
-          const start = Math.max(cfg.deployBlock, end - LOG_CHUNK + 1);
-          chunkIdx++;
-          void (async () => {
-            try {
-              const logs = await publicClient.getContractEvents({
-                address: cfg.contract,
-                abi: baseBoardAbi,
-                eventName: "PlotsPurchased",
-                fromBlock: BigInt(start),
-                toBlock: BigInt(end),
-              });
-              logs.forEach((log: { args?: { plotIds?: readonly bigint[] } }) => {
-                const args = log.args;
-                args?.plotIds?.forEach((b) => {
-                  const id = Number(b);
-                  if (!allMintedRef.current.has(id)) {
-                    allMintedRef.current.add(id);
-                    // Immediately batch-read newly discovered standalone plots
-                    void (async () => {
-                      try {
-                        const res = (await readContractWithTimeout(
-                          publicClient.readContract({
-                            address: cfg.contract,
-                            abi: baseBoardAbi,
-                            functionName: "getPlotsBatch",
-                            args: [[BigInt(id)]],
-                          }),
-                        )) as readonly Plot[];
-                        const p = res[0];
-                        if (p && p.owner.toLowerCase() !== ZERO_ADDRESS) {
-                          map.set(id, p);
-                          preloadImages({ [id]: p });
-                          dirtyRef.current = true;
-                          forceTick((t) => t + 1);
-                        }
-                      } catch { /* skip */ }
-                    })();
-                  }
-                });
-              });
-            } catch { /* skip failed chunk */ }
-            backfillRef.current = setTimeout(doBackfill, 100);
-          })();
-        };
-        doBackfill();
-      }
-
-      if (densityEnabledRef.current) bakeDensity();
-      dirtyRef.current = true;
-      forceTick((t) => t + 1);
-    } catch { /* RPC unavailable */ }
-  }, [publicClient, cfg.isConfigured, cfg.contract, cfg.deployBlock, bakeDensity, preloadImages]);
-
-  // Staleness counter: updates every 15s so the indicator stays current.
+  // Staleness counter: updates every 15s.
   useEffect(() => {
     const id = setInterval(() => {
-      const elapsed = Date.now() - lastSuccessfulFetchRef.current;
-      setStalenessSec(Math.round(elapsed / 1000));
-      // Fire RPC fallback if no fetch has succeeded in >5 min.
-      if (elapsed > STALE_AFTER_MS) void rpcFallback();
+      setStalenessSec(Math.round((Date.now() - lastSuccessfulFetchRef.current) / 1000));
     }, 15_000);
     return () => clearInterval(id);
-  }, [rpcFallback]);
+  }, []);
 
   // State isolation: when the chain changes, wipe all cached data.
   const prevChainRef = useRef(chainId);
@@ -1377,30 +1259,23 @@ export function BaseBoardCanvas() {
     plotMapRef.current.clear();
     purchaseBlockRef.current.clear();
     latestBlockRef.current = 0;
-    lastRpcFallbackBlockRef.current = 0;
     lastSuccessfulFetchRef.current = 0;
-    allMintedRef.current.clear();
     densityCanvasRef.current = null;
     imageCacheRef.current.clear();
     imageRetryRef.current.clear();
     lodCacheRef.current.clear();
     visibleImageUrisRef.current.clear();
-    if (backfillRef.current) clearTimeout(backfillRef.current);
     clearOptimisticPlots();
     dirtyRef.current = true;
     forceTick((t) => t + 1);
   }, [chainId, clearOptimisticPlots]);
 
-  // Turso fetch on mount (primary initial load).
+  // Turso fetch on mount.
   useEffect(() => {
     if (!cfg.isConfigured) return;
     let cancelled = false;
     (async () => {
       await fetchFromTurso();
-      if (cancelled) return;
-      // On mount, also fire one RPC fallback to catch anything the indexer
-      // may have missed. Subsequent updates rely on Turso + staleness check.
-      void rpcFallback();
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

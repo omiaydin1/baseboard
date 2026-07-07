@@ -33,10 +33,12 @@ const CONTRACT_ADDRESS = (
   process.env.CONTRACT_ADDRESS ?? process.env.NEXT_PUBLIC_BASEBOARD_CONTRACT_ADDRESS ?? "0x0000000000000000000000000000000000000000"
 ) as `0x${string}`;
 const DEPLOY_BLOCK = Number(
-  process.env.DEPLOY_BLOCK ?? process.env.NEXT_PUBLIC_BASEBOARD_DEPLOY_BLOCK || "47083347"
+  process.env.DEPLOY_BLOCK ?? (process.env.NEXT_PUBLIC_BASEBOARD_DEPLOY_BLOCK || "47083347")
 );
-const LOG_CHUNK = 9_500;
+const LOG_CHUNK = 2_500;
 const BATCH_READ_CHUNK = 400;
+const MAX_RETRIES = 5;
+const INITIAL_BACKOFF = 2000;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const BASENAME_L2_RESOLVER = "0xC6d566A56A1aFf6508b41f6c90ff131615583BCD" as const;
@@ -53,6 +55,39 @@ const L2_RESOLVER_ABI = [
 
 function isZeroAddr(a: string): boolean {
   return a.toLowerCase() === ZERO_ADDRESS;
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchWithRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  retries = MAX_RETRIES,
+  backoff = INITIAL_BACKOFF,
+): Promise<T> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const isRateLimit =
+        err?.details?.includes?.("rate limit") ||
+        err?.message?.includes?.("rate limit") ||
+        err?.shortMessage?.includes?.("rate limit") ||
+        err?.details?.includes?.("over rate limit") ||
+        err?.shortMessage?.includes?.("over rate limit") ||
+        err?.message?.includes?.("over rate limit");
+      if (isRateLimit && attempt < retries) {
+        console.log(`  ${label} rate limited, retrying in ${backoff}ms (attempt ${attempt}/${retries})...`);
+        await sleep(backoff);
+        backoff *= 2;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`${label} failed after ${retries} retries`);
 }
 
 function chainCoinType(chainId: number): string {
@@ -101,13 +136,15 @@ async function main() {
   for (let start = fromBlock; start <= latest; start += LOG_CHUNK + 1) {
     const end = Math.min(start + LOG_CHUNK, latest);
     try {
-      const logs = await publicClient.getContractEvents({
-        address: CONTRACT_ADDRESS,
-        abi: baseBoardAbi,
-        eventName: "PlotsPurchased",
-        fromBlock: BigInt(start),
-        toBlock: BigInt(end),
-      });
+      const logs = await fetchWithRetry(`events ${start}..${end}`, () =>
+        publicClient.getContractEvents({
+          address: CONTRACT_ADDRESS,
+          abi: baseBoardAbi,
+          eventName: "PlotsPurchased",
+          fromBlock: BigInt(start),
+          toBlock: BigInt(end),
+        }),
+      );
 
       for (const log of logs) {
         const args = log.args as {
@@ -146,12 +183,14 @@ async function main() {
     for (let i = 0; i < allIds.length; i += BATCH_READ_CHUNK) {
       const slice = allIds.slice(i, i + BATCH_READ_CHUNK);
       try {
-        const plots = (await publicClient.readContract({
-          address: CONTRACT_ADDRESS,
-          abi: baseBoardAbi,
-          functionName: "getPlotsBatch",
-          args: [slice.map((n) => BigInt(n))],
-        })) as readonly {
+        const plots = (await fetchWithRetry(`getPlotsBatch ${slice[0]}..${slice[slice.length - 1]}`, () =>
+          publicClient.readContract({
+            address: CONTRACT_ADDRESS,
+            abi: baseBoardAbi,
+            functionName: "getPlotsBatch",
+            args: [slice.map((n) => BigInt(n))],
+          }),
+        )) as readonly {
           owner: `0x${string}`;
           price: bigint;
           isForSale: boolean;

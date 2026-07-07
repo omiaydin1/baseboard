@@ -71,10 +71,13 @@ function convertBoardWire(wire: BoardWireResponse): TursoBoardResponse {
 export async function fetchTursoBoard(
   ids?: number[],
   signal?: AbortSignal,
+  since?: number,
 ): Promise<TursoBoardResponse | null> {
   const params = ids
     ? `ids=${ids.join(",")}`
-    : "ids=all";
+    : since
+      ? `ids=all&since=${since}`
+      : "ids=all";
   const wire = await fetchJson<BoardWireResponse>(`/api/board?${params}`, signal);
   if (!wire) return null;
   return convertBoardWire(wire);

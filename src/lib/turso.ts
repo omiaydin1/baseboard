@@ -249,10 +249,18 @@ export async function getPlotBatch(
 
 export async function getAllPlots(
   client: ReturnType<typeof createClient>,
+  since?: number,
 ): Promise<Array<{ plotId: number; owner: string; price: string; isForSale: boolean; imageUri: string }>> {
-  const rs = await client.execute(
-    "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000'",
-  );
+  let sql: string;
+  let args: (string | number)[];
+  if (since) {
+    sql = "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000' AND updated_at > ?";
+    args = [since];
+  } else {
+    sql = "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000'";
+    args = [];
+  }
+  const rs = await client.execute({ sql, args });
   return rs.rows.map((row) => ({
     plotId: Number(row.plot_id),
     owner: row.owner as string,
