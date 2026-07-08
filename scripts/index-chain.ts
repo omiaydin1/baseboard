@@ -28,7 +28,7 @@ import {
 } from "../src/lib/turso";
 import { baseBoardAbi } from "../src/lib/contract";
 
-const RPC_URL = process.env.RPC_URL ?? "https://mainnet.base.org";
+const RPC_URL = process.env.RPC_URL ?? "https://api.developer.coinbase.com/rpc/v1/base/A9A5uvKtQoPuhzJ42DUmgIb7ocEID6Km";
 const CONTRACT_ADDRESS = (
   process.env.CONTRACT_ADDRESS ?? process.env.NEXT_PUBLIC_BASEBOARD_CONTRACT_ADDRESS ?? "0x0000000000000000000000000000000000000000"
 ) as `0x${string}`;
