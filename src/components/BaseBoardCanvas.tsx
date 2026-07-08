@@ -1184,45 +1184,53 @@ export function BaseBoardCanvas() {
       // Batch-read just the newly purchased plots from chain.
       if (!publicClient) return;
       void (async () => {
-        try {
-          const result = (await readContractWithTimeout(
-            publicClient.readContract({
-              address: cfg.contract,
-              abi: baseBoardAbi,
-              functionName: "getPlotsBatch",
-              args: [newPlotIds.map((n) => BigInt(n))],
-            }),
-          )) as readonly Plot[];
-          const map = plotMapRef.current;
-          result.forEach((plot, i) => {
-            const id = newPlotIds[i];
-            if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
-            else map.delete(id);
-          });
-          // Persist to Turso immediately so the data survives any page refresh
-          // without waiting for the GitHub Actions indexer (which runs every 5m).
-          for (const [i, plot] of result.entries()) {
-            const id = newPlotIds[i];
-            fetch("/api/board/upsert", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                plotId: id,
-                owner: plot.owner,
-                price: plot.price.toString(),
-                isForSale: plot.isForSale,
-                imageUri: plot.imageUri,
+        let result: readonly Plot[] | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            result = (await readContractWithTimeout(
+              publicClient.readContract({
+                address: cfg.contract,
+                abi: baseBoardAbi,
+                functionName: "getPlotsBatch",
+                args: [newPlotIds.map((n) => BigInt(n))],
               }),
-            }).catch(() => {});
+            )) as readonly Plot[];
+            break;
+          } catch (e) {
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+            else console.error("Watcher: getPlotsBatch failed after 3 retries", e);
           }
-          // Persist to localStorage as well for instant re-render fallback.
-          const obj: Record<number, Plot> = {};
-          map.forEach((v, k) => { obj[k] = v; });
-          saveBoardCache(obj);
-          if (densityEnabledRef.current) bakeDensity();
-          dirtyRef.current = true;
-          forceTick((t) => t + 1);
-        } catch { /* rpc unavailable */ }
+        }
+        if (!result) return;
+        const map = plotMapRef.current;
+        result.forEach((plot, i) => {
+          const id = newPlotIds[i];
+          if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
+          else map.delete(id);
+        });
+        // Persist to Turso immediately so the data survives any page refresh
+        // without waiting for the GitHub Actions indexer (which runs every 5m).
+        for (const [i, plot] of result.entries()) {
+          const id = newPlotIds[i];
+          fetch("/api/board/upsert", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              plotId: id,
+              owner: plot.owner,
+              price: plot.price.toString(),
+              isForSale: plot.isForSale,
+              imageUri: plot.imageUri,
+            }),
+          }).catch((e) => console.error("Upsert failed for plot", id, e));
+        }
+        // Persist to localStorage as well for instant re-render fallback.
+        const obj: Record<number, Plot> = {};
+        map.forEach((v, k) => { obj[k] = v; });
+        saveBoardCache(obj);
+        if (densityEnabledRef.current) bakeDensity();
+        dirtyRef.current = true;
+        forceTick((t) => t + 1);
       })();
     },
   });
@@ -1266,7 +1274,7 @@ export function BaseBoardCanvas() {
               isForSale: p.isForSale,
               imageUri: args.imageUri,
             }),
-          }).catch(() => {});
+          }).catch((e) => console.error("Image upsert failed for plot", id, e));
         }
       });
       // Persist to localStorage so image survives refresh
@@ -1321,6 +1329,13 @@ export function BaseBoardCanvas() {
       }
       map.set(Number(id), plot);
     });
+    // Optimistic override'ları da map'e ekle — watcher başarısız olsa
+    // bile BuyModal'in koyduğu veri kaybolmaz.
+    const optimistic = useBoardStore.getState().optimisticPlots;
+    for (const [id, plot] of Object.entries(optimistic)) {
+      map.set(Number(id), plot);
+    }
+
     lastSuccessfulFetchRef.current = Date.now();
     setStalenessSec(0);
     preloadImages(res.plots);

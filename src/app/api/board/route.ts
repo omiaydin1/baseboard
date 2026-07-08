@@ -44,7 +44,9 @@ export async function GET(req: NextRequest) {
     let rows: Awaited<ReturnType<typeof getPlotBatch>>;
 
     if (idsParam === "all") {
-      const since = sinceParam ? Number(sinceParam) : undefined;
+      // `sinceParam` client'tan milisaniye olarak gelir; Turso'daki
+      // `updated_at` saniye cinsinden kaydedilir, bu yüzden bölüyoruz.
+      const since = sinceParam ? Math.floor(Number(sinceParam) / 1000) : undefined;
       rows = await getAllPlots(client, since);
     } else {
       if (!idsParam) {
