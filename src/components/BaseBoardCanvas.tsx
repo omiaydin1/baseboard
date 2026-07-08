@@ -124,6 +124,8 @@ export function BaseBoardCanvas() {
   const refreshNonce = useBoardStore((s) => s.refreshNonce);
   const focusPlotId = useBoardStore((s) => s.focusPlotId);
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
+  const focusBounds = useBoardStore((s) => s.focusBounds);
+  const setFocusBounds = useBoardStore((s) => s.setFocusBounds);
   const selectMode = useBoardStore((s) => s.selectMode);
   const toggleSelectMode = useBoardStore((s) => s.toggleSelectMode);
   const basket = useBoardStore((s) => s.basket);
@@ -856,66 +858,6 @@ export function BaseBoardCanvas() {
         visibleImageUrisRef.current = nextUris;
       }
 
-      // "For sale" markers when zoomed in.
-      if (cam.scale >= IMAGE_MIN_SCALE) {
-        ctx.save();
-        ctx.fillStyle = "#ffffff";
-        ctx.font = `${Math.max(8, cam.scale * 0.5)}px sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        map.forEach((plot, id) => {
-          if (!plot.isForSale) return;
-          const { x, y } = xyFromPlotId(id);
-          if (x < startX - 1 || x > endX + 1 || y < startY - 1 || y > endY + 1)
-            return;
-          if (plot.imageUri) return;
-          ctx.fillText(
-            "$",
-            cellToScreenX(x) + cam.scale / 2,
-            cellToScreenY(y) + cam.scale / 2,
-          );
-        });
-        ctx.restore();
-
-        // For-sale markers on image groups: tek "$" zone/group merkezinde,
-        // yari-saydam beyaz arkaplan uzerinde.
-        ctx.save();
-        groups.forEach((g) => {
-          const bx1 = g.zone ? g.zone.x1 : g.x1;
-          const by1 = g.zone ? g.zone.y1 : g.y1;
-          const bx2 = g.zone ? g.zone.x2 : g.x2;
-          const by2 = g.zone ? g.zone.y2 : g.y2;
-          if (bx2 < startX - 1 || bx1 > endX + 1 || by2 < startY - 1 || by1 > endY + 1)
-            return;
-          let forSale = false;
-          for (const c of g.cells) {
-            const p = map.get(plotIdFromXY(c.x, c.y));
-            if (p?.isForSale) { forSale = true; break; }
-          }
-          if (!forSale) return;
-          const cx = (bx1 + bx2 + 1) / 2;
-          const cy = (by1 + by2 + 1) / 2;
-          const sx = cellToScreenX(cx);
-          const sy = cellToScreenY(cy);
-          const spanCells = Math.max(bx2 - bx1 + 1, by2 - by1 + 1);
-          const fontSize = Math.max(10, Math.min(spanCells * cam.scale * 0.45, 36));
-          ctx.font = `bold ${fontSize}px sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          const metrics = ctx.measureText("$");
-          const pad = fontSize * 0.3;
-          ctx.fillStyle = "rgba(255,255,255,0.8)";
-          ctx.fillRect(
-            sx - metrics.width / 2 - pad,
-            sy - fontSize / 2 - pad,
-            metrics.width + pad * 2,
-            fontSize + pad * 2,
-          );
-          ctx.fillStyle = "#0052ff";
-          ctx.fillText("$", sx, sy);
-        });
-        ctx.restore();
-      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [address],
@@ -1346,141 +1288,6 @@ export function BaseBoardCanvas() {
   });
 
   // -------------------------------------------------------------------
-  // Shared handler for listing / sale / offer events (Part 11.3)
-  // -------------------------------------------------------------------
-  const handlePlotStateRefresh = useCallback(
-    async (plotIds: number[]) => {
-      if (!publicClient || plotIds.length === 0) return;
-      let result: readonly Plot[] | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          result = (await readContractWithTimeout(
-            publicClient.readContract({
-              address: cfg.contract,
-              abi: baseBoardAbi,
-              functionName: "getPlotsBatch",
-              args: [plotIds.map((n) => BigInt(n))],
-            }),
-          )) as readonly Plot[];
-          break;
-        } catch (e) {
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
-          else console.error("handlePlotStateRefresh failed after 3 retries", e);
-        }
-      }
-      if (!result) return;
-      const map = plotMapRef.current;
-      result.forEach((plot, i) => {
-        const id = plotIds[i];
-        if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
-        else map.delete(id);
-      });
-      for (const [i, plot] of result.entries()) {
-        const id = plotIds[i];
-        fetch("/api/board/upsert", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            plotId: id,
-            owner: plot.owner,
-            price: plot.price.toString(),
-            isForSale: plot.isForSale,
-            imageUri: plot.imageUri,
-          }),
-        }).catch((e) => console.error("handlePlotStateRefresh upsert failed", id, e));
-      }
-      // Clear optimistic overrides for these IDs
-      const opt = useBoardStore.getState().optimisticPlots;
-      const confirmed = plotIds.filter((id) => opt[id] !== undefined);
-      if (confirmed.length > 0) {
-        useBoardStore.getState().removeConfirmedPlots(confirmed);
-      }
-      const obj: Record<number, Plot> = {};
-      map.forEach((v, k) => { obj[k] = v; });
-      saveBoardCache(obj);
-      dirtyRef.current = true;
-      forceTick((t) => t + 1);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [publicClient, cfg.contract],
-  );
-
-  // ---- Real-time watcher: PlotListed ----
-  useWatchContractEvent({
-    address: cfg.isConfigured ? cfg.contract : undefined,
-    abi: baseBoardAbi,
-    eventName: "PlotListed",
-    onLogs(logs: { args?: { plotId?: bigint; owner?: `0x${string}` } }[]) {
-      const ids: number[] = [];
-      logs.forEach((l) => {
-        const pid = l.args?.plotId;
-        if (pid != null) ids.push(Number(pid));
-      });
-      if (ids.length) handlePlotStateRefresh(ids);
-    },
-  });
-
-  // ---- Real-time watcher: ListingCancelled ----
-  useWatchContractEvent({
-    address: cfg.isConfigured ? cfg.contract : undefined,
-    abi: baseBoardAbi,
-    eventName: "ListingCancelled",
-    onLogs(logs: { args?: { plotId?: bigint; owner?: `0x${string}` } }[]) {
-      const ids: number[] = [];
-      logs.forEach((l) => {
-        const pid = l.args?.plotId;
-        if (pid != null) ids.push(Number(pid));
-      });
-      if (ids.length) handlePlotStateRefresh(ids);
-    },
-  });
-
-  // ---- Real-time watcher: PriceUpdated ----
-  useWatchContractEvent({
-    address: cfg.isConfigured ? cfg.contract : undefined,
-    abi: baseBoardAbi,
-    eventName: "PriceUpdated",
-    onLogs(logs: { args?: { plotId?: bigint; owner?: `0x${string}` } }[]) {
-      const ids: number[] = [];
-      logs.forEach((l) => {
-        const pid = l.args?.plotId;
-        if (pid != null) ids.push(Number(pid));
-      });
-      if (ids.length) handlePlotStateRefresh(ids);
-    },
-  });
-
-  // ---- Real-time watcher: PlotSold ----
-  useWatchContractEvent({
-    address: cfg.isConfigured ? cfg.contract : undefined,
-    abi: baseBoardAbi,
-    eventName: "PlotSold",
-    onLogs(logs: { args?: { plotId?: bigint; seller?: `0x${string}`; buyer?: `0x${string}` } }[]) {
-      const ids: number[] = [];
-      logs.forEach((l) => {
-        const pid = l.args?.plotId;
-        if (pid != null) ids.push(Number(pid));
-      });
-      if (ids.length) handlePlotStateRefresh(ids);
-    },
-  });
-
-  // ---- Real-time watcher: OfferAccepted ----
-  useWatchContractEvent({
-    address: cfg.isConfigured ? cfg.contract : undefined,
-    abi: baseBoardAbi,
-    eventName: "OfferAccepted",
-    onLogs(logs: { args?: { plotId?: bigint; seller?: `0x${string}`; offeror?: `0x${string}` } }[]) {
-      const ids: number[] = [];
-      logs.forEach((l) => {
-        const pid = l.args?.plotId;
-        if (pid != null) ids.push(Number(pid));
-      });
-      if (ids.length) handlePlotStateRefresh(ids);
-    },
-  });
-
-  // -------------------------------------------------------------------
   // Turso-only data loading (no RPC reads in the frontend)
   // -------------------------------------------------------------------
   const lastSuccessfulFetchRef = useRef(0);
@@ -1629,6 +1436,33 @@ export function BaseBoardCanvas() {
     setFocusPlotId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusPlotId]);
+
+  // -------------------------------------------------------------------
+  // Zoom to fit a bounding box (from "Show on Board" in profile)
+  // -------------------------------------------------------------------
+  useEffect(() => {
+    if (focusBounds == null) return;
+    const { x1, y1, x2, y2 } = focusBounds;
+    const cam = cameraRef.current;
+    const { width, height } = sizeRef.current;
+    if (!width || !height) return;
+    const cellW = x2 - x1 + 1;
+    const cellH = y2 - y1 + 1;
+    const pad = 0.15;
+    const padCells = Math.max(cellW, cellH) * pad;
+    const scaleX = (width - 40) / (cellW + padCells * 2);
+    const scaleY = (height - 40) / (cellH + padCells * 2);
+    cam.scale = clamp(Math.min(scaleX, scaleY), MIN_SCALE_FLOOR, MAX_SCALE);
+    const centerX = (x1 + x2) / 2 + 0.5;
+    const centerY = (y1 + y2) / 2 + 0.5;
+    cam.camX = centerX - width / cam.scale / 2;
+    cam.camY = centerY - height / cam.scale / 2;
+    clampCamera();
+    setZoomLabel(cam.scale);
+    dirtyRef.current = true;
+    setFocusBounds(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusBounds]);
 
   // -------------------------------------------------------------------
   // Wheel zoom (logarithmic, zoom toward cursor)

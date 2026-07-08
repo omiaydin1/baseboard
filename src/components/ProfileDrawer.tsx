@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatEther, parseEther } from "viem";
+
 import { useAccount, usePublicClient } from "wagmi";
 import { Spinner } from "./Spinner";
 import { WalletConnect } from "./WalletConnect";
@@ -490,7 +490,7 @@ export function ProfileDrawer() {
   );
 }
 
-type Action = "none" | "list" | "price" | "image";
+type Action = "none" | "image";
 
 function OwnedPlotRow({
   plotId,
@@ -510,14 +510,13 @@ function OwnedPlotRow({
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
+  const setFocusBounds = useBoardStore((s) => s.setFocusBounds);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
   const { writeContractAsync, setPendingTxLabel, status, isSuccess, error } =
     useBaseBoardWrite();
-
   const [action, setAction] = useState<Action>("none");
-  const [priceInput, setPriceInput] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
   // Plot override to push onto the board the moment the tx confirms, so the
@@ -553,17 +552,6 @@ function OwnedPlotRow({
     }
   };
 
-  const parsePrice = (): bigint | null => {
-    try {
-      const v = parseEther(priceInput || "0");
-      if (v <= 0n) throw new Error("zero");
-      return v;
-    } catch {
-      setLocalError("Enter a valid ETH price");
-      return null;
-    }
-  };
-
   /** Build a single-plot optimistic override from the current plot + changes. */
   const override = (changes: Partial<Plot>): Record<number, Plot> => ({
     [plotId]: {
@@ -574,46 +562,6 @@ function OwnedPlotRow({
       ...changes,
     },
   });
-
-  const onList = () => {
-    const v = parsePrice();
-    if (v == null) return;
-    pendingOverrideRef.current = override({ isForSale: true, price: v });
-    void submit("Listing", () =>
-      writeContractAsync({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "listPlot",
-        args: [BigInt(plotId), v],
-      }),
-    );
-  };
-
-  const onUpdatePrice = () => {
-    const v = parsePrice();
-    if (v == null) return;
-    pendingOverrideRef.current = override({ isForSale: true, price: v });
-    void submit("Price update", () =>
-      writeContractAsync({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "updatePlotPrice",
-        args: [BigInt(plotId), v],
-      }),
-    );
-  };
-
-  const onCancel = () => {
-    pendingOverrideRef.current = override({ isForSale: false, price: 0n });
-    void submit("Cancel listing", () =>
-      writeContractAsync({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "cancelListing",
-        args: [BigInt(plotId)],
-      }),
-    );
-  };
 
   const onSaveImage = async (uri: string, link?: string | null) => {
     const finalUri = withMeta(uri.trim(), { link });
@@ -705,17 +653,6 @@ function OwnedPlotRow({
           </p>
           <p className="text-xs text-slate-500">id #{plotId}</p>
         </button>
-        <div className="text-right text-xs">
-          {plot?.isForSale ? (
-            <span className="rounded-full bg-green-100 px-2 py-0.5 font-semibold text-green-700">
-              Listed · {formatEther(plot.price)} ETH
-            </span>
-          ) : (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-500">
-              Not listed
-            </span>
-          )}
-        </div>
       </div>
 
       {plot?.imageUri && (
@@ -727,26 +664,14 @@ function OwnedPlotRow({
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {!plot?.isForSale ? (
-          <ActionButton
-            active={action === "list"}
-            onClick={() => setAction(action === "list" ? "none" : "list")}
-          >
-            List for Sale
-          </ActionButton>
-        ) : (
-          <>
-            <ActionButton
-              active={action === "price"}
-              onClick={() => setAction(action === "price" ? "none" : "price")}
-            >
-              Update Price
-            </ActionButton>
-            <ActionButton onClick={onCancel} variant="danger" disabled={busy}>
-              Cancel Listing
-            </ActionButton>
-          </>
-        )}
+        <ActionButton
+          onClick={() => {
+            setFocusBounds({ x1: x, y1: y, x2: x, y2: y });
+            setProfileOpen(false);
+          }}
+        >
+          Show on Board
+        </ActionButton>
         <ActionButton
           active={action === "image"}
           onClick={() => setAction(action === "image" ? "none" : "image")}
@@ -754,27 +679,6 @@ function OwnedPlotRow({
           {plot?.imageUri ? "Update Image" : "Upload Image"}
         </ActionButton>
       </div>
-
-      {(action === "list" || action === "price") && (
-        <div className="mt-3 flex gap-2">
-          <input
-            type="number"
-            min="0"
-            step="0.00001"
-            value={priceInput}
-            onChange={(e) => setPriceInput(e.target.value)}
-            placeholder="Price in ETH"
-            className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
-          />
-          <PrimaryButton
-            onClick={action === "list" ? onList : onUpdatePrice}
-            busy={busy}
-            disabled={busy || !priceInput}
-          >
-            {action === "list" ? "List" : "Update"}
-          </PrimaryButton>
-        </div>
-      )}
 
       {action === "image" && (
         <div className="mt-3">
@@ -920,14 +824,14 @@ function LargeClusterRow({
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
+  const setFocusBounds = useBoardStore((s) => s.setFocusBounds);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
   const { writeContractAsync, setPendingTxLabel, status, isSuccess, error } =
     useBaseBoardWrite();
 
-  const [action, setAction] = useState<"none" | "list" | "price" | "image">("none");
-  const [priceInput, setPriceInput] = useState("");
+  const [action, setAction] = useState<"none" | "image">("none");
   const [localError, setLocalError] = useState<string | null>(null);
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
   const [splitMode, setSplitMode] = useState(false);
@@ -966,17 +870,6 @@ function LargeClusterRow({
     }
   };
 
-  const parsePrice = (): bigint | null => {
-    try {
-      const v = parseEther(priceInput || "0");
-      if (v <= 0n) throw new Error("zero");
-      return v;
-    } catch {
-      setLocalError("Enter a valid ETH price");
-      return null;
-    }
-  };
-
   const override = (changes: Partial<Plot>): Record<number, Plot> => ({
     [anchorId]: {
       owner: (address ?? anchorPlot?.owner ?? ZERO_ADDRESS) as `0x${string}`,
@@ -986,46 +879,6 @@ function LargeClusterRow({
       ...changes,
     },
   });
-
-  const onList = () => {
-    const v = parsePrice();
-    if (v == null) return;
-    pendingOverrideRef.current = override({ isForSale: true, price: v });
-    void submit("Listing", () =>
-      writeContractAsync({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "listPlot",
-        args: [BigInt(anchorId), v],
-      }),
-    );
-  };
-
-  const onUpdatePrice = () => {
-    const v = parsePrice();
-    if (v == null) return;
-    pendingOverrideRef.current = override({ isForSale: true, price: v });
-    void submit("Price update", () =>
-      writeContractAsync({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "updatePlotPrice",
-        args: [BigInt(anchorId), v],
-      }),
-    );
-  };
-
-  const onCancel = () => {
-    pendingOverrideRef.current = override({ isForSale: false, price: 0n });
-    void submit("Cancel listing", () =>
-      writeContractAsync({
-        address: cfg.contract,
-        abi: baseBoardAbi,
-        functionName: "cancelListing",
-        args: [BigInt(anchorId)],
-      }),
-    );
-  };
 
   const onSaveImage = async (uri: string, link?: string | null) => {
     const finalUri = withMeta(uri.trim(), { zone: bbox, link });
@@ -1144,17 +997,6 @@ function LargeClusterRow({
             {bboxW}×{bboxH} area · {cluster.length} pixels
           </p>
         </button>
-        <div className="text-right text-xs">
-          {anchorPlot?.isForSale ? (
-            <span className="rounded-full bg-green-100 px-2 py-0.5 font-semibold text-green-700">
-              Listed · {formatEther(anchorPlot.price)} ETH
-            </span>
-          ) : (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-500">
-              Not listed
-            </span>
-          )}
-        </div>
       </div>
 
       {anchorPlot?.imageUri && (
@@ -1166,26 +1008,14 @@ function LargeClusterRow({
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {!anchorPlot?.isForSale ? (
-          <ActionButton
-            active={action === "list"}
-            onClick={() => setAction(action === "list" ? "none" : "list")}
-          >
-            List for Sale
-          </ActionButton>
-        ) : (
-          <>
-            <ActionButton
-              active={action === "price"}
-              onClick={() => setAction(action === "price" ? "none" : "price")}
-            >
-              Update Price
-            </ActionButton>
-            <ActionButton onClick={onCancel} variant="danger" disabled={busy}>
-              Cancel Listing
-            </ActionButton>
-          </>
-        )}
+        <ActionButton
+          onClick={() => {
+            setFocusBounds({ x1: bbox.x1, y1: bbox.y1, x2: bbox.x2, y2: bbox.y2 });
+            setProfileOpen(false);
+          }}
+        >
+          Show on Board
+        </ActionButton>
         <ActionButton
           active={action === "image"}
           onClick={() => {
@@ -1197,27 +1027,6 @@ function LargeClusterRow({
           {anchorPlot?.imageUri ? "Update Image" : "Upload Image"}
         </ActionButton>
       </div>
-
-      {(action === "list" || action === "price") && (
-        <div className="mt-3 flex gap-2">
-          <input
-            type="number"
-            min="0"
-            step="0.00001"
-            value={priceInput}
-            onChange={(e) => setPriceInput(e.target.value)}
-            placeholder="Price in ETH"
-            className="w-full rounded-lg border-2 border-blue-100 px-3 py-1.5 text-sm focus:border-base-blue focus:outline-none"
-          />
-          <PrimaryButton
-            onClick={action === "list" ? onList : onUpdatePrice}
-            busy={busy}
-            disabled={busy || !priceInput}
-          >
-            {action === "list" ? "List" : "Update"}
-          </PrimaryButton>
-        </div>
-      )}
 
       {action === "image" && (
         <div className="mt-3 space-y-3">

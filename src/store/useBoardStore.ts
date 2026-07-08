@@ -75,6 +75,10 @@ interface BoardUIState {
   focusPlotId: number | null;
   setFocusPlotId: (id: number | null) => void;
 
+  /** Bounding box the canvas should zoom to fit (from "Show on Board"). */
+  focusBounds: { x1: number; y1: number; x2: number; y2: number } | null;
+  setFocusBounds: (bounds: { x1: number; y1: number; x2: number; y2: number } | null) => void;
+
   /** Transient toast notifications (tx success / failure, validation). */
   toasts: Toast[];
   pushToast: (kind: ToastKind, message: string) => void;
@@ -143,6 +147,9 @@ export const useBoardStore = create<BoardUIState>((set) => ({
 
   focusPlotId: null,
   setFocusPlotId: (id) => set({ focusPlotId: id }),
+
+  focusBounds: null,
+  setFocusBounds: (bounds) => set({ focusBounds: bounds }),
 
   toasts: [],
   pushToast: (kind, message) => {
