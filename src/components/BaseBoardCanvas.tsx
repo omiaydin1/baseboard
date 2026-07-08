@@ -777,26 +777,34 @@ export function BaseBoardCanvas() {
               // wasted work — draw the artwork across the whole span bbox cheaply.
               ctx.rect(dx, dy, w, h);
             } else if (g.zone) {
-              // Clip to the owner's loaded cells inside the zone so the image
-              // never bleeds onto plots they don't own.
-              // IMPORTANT: skip cells that have a DIFFERENT image — they
-              // belong to a different group and will be rendered separately.
+              // Clip to every grid cell the owner holds inside the zone so the
+              // artwork never bleeds onto neighbouring plots. Iterating the zone
+              // bbox directly (rather than filtering the full plot map by owner
+              // + imageUri) guarantees that all cells under the zone are
+              // included — even when non‑anchor cells carry a stale/empty
+              // imageUri that would have failed the per‑image check.
               let clipped = 0;
-              const groupUri = stripZone(g.uri);
-              map.forEach((p, id2) => {
-                if (p.owner.toLowerCase() !== g.owner) return;
-                const c = xyFromPlotId(id2);
-                if (c.x < bx1 || c.x > bx2 || c.y < by1 || c.y > by2) return;
-                // Skip cells that have a different image within this zone
-                if (p.imageUri && stripZone(p.imageUri) !== groupUri) return;
-                ctx.rect(
-                  Math.floor(cellToScreenX(c.x)),
-                  Math.floor(cellToScreenY(c.y)),
-                  Math.ceil(cam.scale),
-                  Math.ceil(cam.scale),
-                );
-                clipped++;
-              });
+              for (let cz = by1; cz <= by2; cz++) {
+                for (let cx = bx1; cx <= bx2; cx++) {
+                  const cellId = cz * GRID_SIZE + cx;
+                  const cell = map.get(cellId);
+                  if (!cell) continue;
+                  if (cell.owner.toLowerCase() !== g.owner) continue;
+                  // Skip cells that have an image from a DIFFERENT zone — they
+                  // are rendered by their own group.
+                  if (cell.imageUri) {
+                    const cellZone = parseZone(cell.imageUri);
+                    if (cellZone && (cellZone.x1 !== bx1 || cellZone.y1 !== by1)) continue;
+                  }
+                  ctx.rect(
+                    Math.floor(cellToScreenX(cx)),
+                    Math.floor(cellToScreenY(cz)),
+                    Math.ceil(cam.scale),
+                    Math.ceil(cam.scale),
+                  );
+                  clipped++;
+                }
+              }
               if (clipped === 0) {
                 // The zone's cells haven't loaded yet. Drawing against the full
                 // unclipped bbox here would briefly bleed the image onto plots the
@@ -1238,6 +1246,26 @@ export function BaseBoardCanvas() {
         }
       });
       if (!changed) return;
+      // Persist to Turso immediately (no need to wait for the indexer)
+      logs.forEach((log) => {
+        const args = log.args;
+        if (!args?.plotId || args.imageUri == null) return;
+        const id = Number(args.plotId);
+        const p = map.get(id);
+        if (p) {
+          fetch("/api/board/upsert", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              plotId: id,
+              owner: p.owner,
+              price: p.price.toString(),
+              isForSale: p.isForSale,
+              imageUri: args.imageUri,
+            }),
+          }).catch(() => {});
+        }
+      });
       // Persist to localStorage so image survives refresh
       const obj: Record<number, Plot> = {};
       map.forEach((v, k) => { obj[k] = v; });
