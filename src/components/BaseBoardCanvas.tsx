@@ -1208,6 +1208,18 @@ export function BaseBoardCanvas() {
           if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
           else map.delete(id);
         });
+        // Chain'den gerçek veri geldi — bu ID'ler için optimistic
+        // override'ları temizle (imageUri veya owner değişmiş olabilir).
+        {
+          const confirmed: number[] = [];
+          const opt = useBoardStore.getState().optimisticPlots;
+          for (const id of newPlotIds) {
+            if (opt[id] !== undefined) confirmed.push(id);
+          }
+          if (confirmed.length > 0) {
+            useBoardStore.getState().removeConfirmedPlots(confirmed);
+          }
+        }
         // Persist to Turso immediately so the data survives any page refresh
         // without waiting for the GitHub Actions indexer (which runs every 5m).
         for (const [i, plot] of result.entries()) {
@@ -1334,6 +1346,18 @@ export function BaseBoardCanvas() {
     const optimistic = useBoardStore.getState().optimisticPlots;
     for (const [id, plot] of Object.entries(optimistic)) {
       map.set(Number(id), plot);
+    }
+
+    // Turso'dan gerçek veri gelen optimistic entry'leri temizle.
+    // Owner/imageUri eşleşmesine bakma — Turso'da satır varsa otoriter
+    // odur, optimistic tahmin artık gereksiz (resale/görsel güncelleme).
+    const confirmed: number[] = [];
+    for (const idStr of Object.keys(res.plots)) {
+      const id = Number(idStr);
+      if (optimistic[id] !== undefined) confirmed.push(id);
+    }
+    if (confirmed.length > 0) {
+      useBoardStore.getState().removeConfirmedPlots(confirmed);
     }
 
     lastSuccessfulFetchRef.current = Date.now();

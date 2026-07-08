@@ -62,6 +62,10 @@ interface BoardUIState {
   optimisticPlots: Record<number, Plot>;
   applyOptimisticPlots: (plots: Record<number, Plot>) => void;
   clearOptimisticPlots: () => void;
+  /** Remove confirmed plot IDs from optimistic overrides so stale entries
+   *  (e.g. empty imageUri after a real image was uploaded, or old owner after
+   *  a resale) never overwrite authoritative data on subsequent fetch cycles. */
+  removeConfirmedPlots: (ids: number[]) => void;
 
   /** Monotonic counter bumped after a tx settles to force data refetches. */
   refreshNonce: number;
@@ -127,6 +131,12 @@ export const useBoardStore = create<BoardUIState>((set) => ({
   applyOptimisticPlots: (plots) =>
     set((s) => ({ optimisticPlots: { ...s.optimisticPlots, ...plots } })),
   clearOptimisticPlots: () => set({ optimisticPlots: {} }),
+  removeConfirmedPlots: (ids) =>
+    set((s) => {
+      const next = { ...s.optimisticPlots };
+      for (const id of ids) delete next[id];
+      return { optimisticPlots: next };
+    }),
 
   refreshNonce: 0,
   bumpRefresh: () => set((s) => ({ refreshNonce: s.refreshNonce + 1 })),
