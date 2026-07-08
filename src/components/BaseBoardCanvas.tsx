@@ -1273,15 +1273,12 @@ export function BaseBoardCanvas() {
     lastSuccessfulFetchRef.current = Date.now();
     setStalenessSec(0);
     preloadImages(res.plots);
-    if (since) {
-      const existing = loadBoardCache();
-      if (existing) {
-        Object.assign(existing, res.plots);
-        saveBoardCache(existing);
-      }
-    } else {
-      saveBoardCache(res.plots);
-    }
+    // Always save the full plotMapRef (Turso + localStorage merged) so
+    // newly purchased plots that haven't been indexed by Turso yet survive
+    // a page refresh.
+    const obj: Record<number, Plot> = {};
+    map.forEach((v, k) => { obj[k] = v; });
+    saveBoardCache(obj);
     dirtyRef.current = true;
     forceTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
