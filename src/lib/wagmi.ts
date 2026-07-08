@@ -167,7 +167,7 @@ export function getWagmiConfig() {
       // Fallback across multiple RPCs so a single outage never blocks the app.
       // The first RPC in the list is tried first; on failure the next is used.
       [base.id]: fallback([
-        http("https://api.developer.coinbase.com/rpc/v1/base/A9A5uvKtQoPuhzJ42DUmgIb7ocEID6Km", { timeout: 10_000 }),
+        http(`https://api.developer.coinbase.com/rpc/v1/base/${process.env.NEXT_PUBLIC_ONCHAINKIT_API_KEY || ""}`, { timeout: 10_000 }),
         http("https://base-rpc.publicnode.com", { timeout: 10_000 }),
         http("https://base.llamarpc.com", { timeout: 10_000 }),
       ], { rank: false }),
