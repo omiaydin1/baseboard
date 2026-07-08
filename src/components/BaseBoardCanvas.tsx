@@ -784,17 +784,24 @@ export function BaseBoardCanvas() {
               // included — even when non‑anchor cells carry a stale/empty
               // imageUri that would have failed the per‑image check.
               let clipped = 0;
+              let debugCells: string[] = [];
               for (let cz = by1; cz <= by2; cz++) {
                 for (let cx = bx1; cx <= bx2; cx++) {
                   const cellId = cz * GRID_SIZE + cx;
                   const cell = map.get(cellId);
-                  if (!cell) continue;
-                  if (cell.owner.toLowerCase() !== g.owner) continue;
-                  // Skip cells that have an image from a DIFFERENT zone — they
-                  // are rendered by their own group.
+                  if (!cell) { debugCells.push(`(${cx},${cz}) noMap`); continue; }
+                  if (cell.owner.toLowerCase() !== g.owner) {
+                    const ownerPrefix = cell.owner.slice(0, 6);
+                    const gPrefix = g.owner.slice(0, 6);
+                    debugCells.push(`(${cx},${cz}) owner${ownerPrefix}!=group${gPrefix}`);
+                    continue;
+                  }
                   if (cell.imageUri) {
                     const cellZone = parseZone(cell.imageUri);
-                    if (cellZone && (cellZone.x1 !== bx1 || cellZone.y1 !== by1)) continue;
+                    if (cellZone && (cellZone.x1 !== bx1 || cellZone.y1 !== by1)) {
+                      debugCells.push(`(${cx},${cz}) diffZone(${cellZone.x1},${cellZone.y1})`);
+                      continue;
+                    }
                   }
                   ctx.rect(
                     Math.floor(cellToScreenX(cx)),
@@ -805,12 +812,8 @@ export function BaseBoardCanvas() {
                   clipped++;
                 }
               }
+              console.log(`🔍 zone clip: bbox=${bx1},${by1},${bx2},${by2} clipped=${clipped} cells=`, debugCells);
               if (clipped === 0) {
-                // The zone's cells haven't loaded yet. Drawing against the full
-                // unclipped bbox here would briefly bleed the image onto plots the
-                // owner may not actually hold (the wrong-render flash on fresh
-                // loads). Skip this group this frame and retry next frame once the
-                // cells arrive — the base owned-fill underneath keeps it non-blank.
                 ctx.restore();
                 dirtyRef.current = true;
                 return;
@@ -1311,6 +1314,11 @@ export function BaseBoardCanvas() {
     if (!res?.fromCache) return;
     const map = plotMapRef.current;
     Object.entries(res.plots).forEach(([id, plot]) => {
+      const existing = map.get(Number(id));
+      if (existing && existing.imageUri && !plot.imageUri) {
+        // Turso has stale data (image not yet indexed) — keep the live data.
+        return;
+      }
       map.set(Number(id), plot);
     });
     lastSuccessfulFetchRef.current = Date.now();
