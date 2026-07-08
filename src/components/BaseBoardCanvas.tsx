@@ -1188,8 +1188,23 @@ export function BaseBoardCanvas() {
             if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
             else map.delete(id);
           });
-          // Persist to localStorage so a page refresh doesn't lose the data
-          // before the next Turso indexer run catches up.
+          // Persist to Turso immediately so the data survives any page refresh
+          // without waiting for the GitHub Actions indexer (which runs every 5m).
+          for (const [i, plot] of result.entries()) {
+            const id = newPlotIds[i];
+            fetch("/api/board/upsert", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                plotId: id,
+                owner: plot.owner,
+                price: plot.price.toString(),
+                isForSale: plot.isForSale,
+                imageUri: plot.imageUri,
+              }),
+            }).catch(() => {});
+          }
+          // Persist to localStorage as well for instant re-render fallback.
           const obj: Record<number, Plot> = {};
           map.forEach((v, k) => { obj[k] = v; });
           saveBoardCache(obj);
