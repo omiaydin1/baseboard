@@ -1188,6 +1188,11 @@ export function BaseBoardCanvas() {
             if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
             else map.delete(id);
           });
+          // Persist to localStorage so a page refresh doesn't lose the data
+          // before the next Turso indexer run catches up.
+          const obj: Record<number, Plot> = {};
+          map.forEach((v, k) => { obj[k] = v; });
+          saveBoardCache(obj);
           if (densityEnabledRef.current) bakeDensity();
           dirtyRef.current = true;
           forceTick((t) => t + 1);
@@ -1218,6 +1223,10 @@ export function BaseBoardCanvas() {
         }
       });
       if (!changed) return;
+      // Persist to localStorage so image survives refresh
+      const obj: Record<number, Plot> = {};
+      map.forEach((v, k) => { obj[k] = v; });
+      saveBoardCache(obj);
       // Preload the updated images
       const updatedPlots: Record<number, { imageUri: string }> = {};
       logs.forEach((log) => {
