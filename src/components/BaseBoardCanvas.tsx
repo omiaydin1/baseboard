@@ -52,7 +52,7 @@ const LOD_CACHE_MAX = 200;   // max entries in lodCacheRef before LRU eviction
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
 const STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 const BOARD_CACHE_KEY = "baseboard:board-data";
-const BOARD_CACHE_TTL = 60_000; // 1 minute — short so fresh data loads eventually
+const BOARD_CACHE_TTL = 10 * 60 * 1000; // 10 minutes — covers the 5-min indexer gap
 
 interface CachedBoardWire {
   plots: Record<string, { owner: string; price: string; isForSale: boolean; imageUri: string }>;
