@@ -100,3 +100,48 @@ export function displayName(
 
 /** @deprecated Use `shortAddress`; kept as an alias for the unified 6+6 rule. */
 export const shortAddressLong = shortAddress;
+
+/**
+ * Group plot IDs into contiguous clusters using 4- or 8-directional adjacency.
+ * @param ids       - flat array of plot ids to cluster
+ * @param diagonal  - if true, include diagonal neighbours (8-directional);
+ *                    if false, only edge-adjacent (4-directional). Default false.
+ * @returns array of clusters, each cluster being a sorted array of plot ids.
+ */
+export function clusterize(ids: number[], diagonal: boolean = false): number[][] {
+  const set = new Set(ids);
+  const seen = new Set<number>();
+  const clusters: number[][] = [];
+
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const stack = [id];
+    const cluster: number[] = [];
+
+    while (stack.length) {
+      const cur = stack.pop()!;
+      cluster.push(cur);
+      const { x, y } = xyFromPlotId(cur);
+
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          if (dx === 0 && dy === 0) continue;
+          if (!diagonal && Math.abs(dx) + Math.abs(dy) !== 1) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue;
+          const nid = plotIdFromXY(nx, ny);
+          if (set.has(nid) && !seen.has(nid)) {
+            seen.add(nid);
+            stack.push(nid);
+          }
+        }
+      }
+    }
+
+    clusters.push(cluster.sort((a, b) => a - b));
+  }
+
+  return clusters;
+}

@@ -10,7 +10,7 @@ import { usePlotsByOwner, useBaseBoardWrite } from "@/hooks/useBaseBoard";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
 import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
-import { plotIdFromXY, shortAddress, xyFromPlotId } from "@/lib/coords";
+import { clusterize as clusterizeCoords, plotIdFromXY, shortAddress, xyFromPlotId } from "@/lib/coords";
 import { useBaseName } from "@/hooks/useBaseName";
 import { fetchTursoBoard } from "@/lib/tursoClient";
 import {
@@ -30,45 +30,14 @@ import type { Plot } from "@/lib/types";
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
 
 /**
- * Group owned plot ids into clusters of 4-neighbour adjacency. Each cluster is
- * one contiguous "purchase block", letting the multi-select UX offer a single
- * master checkbox to toggle every plot bought together at once.
+ * Group owned plot ids into clusters of 8-directional adjacency (including
+ * diagonals) so an L-shape / diagonal block is grouped as one cohesive cluster.
+ * Delegates to the shared utility in coords.ts so all contiguity logic stays
+ * consistent — the canvas renderer uses the same underlying function with
+ * 4-directional adjacency for grid-line suppression.
  */
 function clusterize(ids: number[]): number[][] {
-  const set = new Set(ids);
-  const seen = new Set<number>();
-  const clusters: number[][] = [];
-  for (const id of ids) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const stack = [id];
-    const cluster: number[] = [];
-    while (stack.length) {
-      const cur = stack.pop() as number;
-      cluster.push(cur);
-      const { x, y } = xyFromPlotId(cur);
-      // 8-directional adjacency: plots touching on any side OR corner belong to
-      // the same cohesive cluster, so an L-shape / diagonal block is grouped.
-      const neighbours: number[] = [];
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          if (dx === 0 && dy === 0) continue;
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue;
-          neighbours.push(plotIdFromXY(nx, ny));
-        }
-      }
-      for (const n of neighbours) {
-        if (set.has(n) && !seen.has(n)) {
-          seen.add(n);
-          stack.push(n);
-        }
-      }
-    }
-    clusters.push(cluster.sort((a, b) => a - b));
-  }
-  return clusters;
+  return clusterizeCoords(ids, true);
 }
 
 const CLUSTER_THRESHOLD = 20;
@@ -439,36 +408,19 @@ export function ProfileDrawer() {
                     });
                   })()
                 : (() => {
-                    const CLUSTER_THRESHOLD = 20;
                     const clusters = clusterize(ids);
                     const rows: React.ReactNode[] = [];
                     for (const cluster of clusters) {
-                      if (cluster.length >= CLUSTER_THRESHOLD) {
-                        const bbox = clusterBBox(cluster);
-                        const anchorId = Math.min(...cluster);
-                        rows.push(
-                          <LargeClusterRow
-                            key={`cluster-${anchorId}`}
-                            cluster={cluster}
-                            clusterIds={cluster}
-                            bbox={bbox}
-                            anchorPlot={details[anchorId]}
-                          />,
-                        );
-                      } else {
-                        for (const id of cluster) {
-                          rows.push(
-                            <OwnedPlotRow
-                              key={id}
-                              plotId={id}
-                              plot={details[id]}
-                              selectable={false}
-                              checked={selected.includes(id)}
-                              onToggle={() => toggleSelected(id)}
-                            />,
-                          );
-                        }
-                      }
+                      const bbox = clusterBBox(cluster);
+                      const anchorId = Math.min(...cluster);
+                      rows.push(
+                        <LargeClusterRow
+                          key={`cluster-${anchorId}`}
+                          cluster={cluster}
+                          bbox={bbox}
+                          anchorPlot={details[anchorId]}
+                        />,
+                      );
                     }
                     return rows;
                   })()}

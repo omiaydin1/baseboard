@@ -198,6 +198,16 @@ export function BaseBoardCanvas() {
 
   // Loaded plot data for the current viewport + image cache.
   const plotMapRef = useRef<Map<number, Plot>>(new Map());
+  // Contiguous-block membership for grid-line suppression. Keyed by plotId,
+  // value = `${owner}|${blockIndex}`. Rebuilt when plot data changes.
+  const plotBlockRef = useRef<Map<number, string>>(new Map());
+  const plotBlockMembersRef = useRef<Map<string, number[]>>(new Map());
+  const plotBlockDirtyRef = useRef(true);
+  // Transaction-batch grouping for hover highlight. Populated by the
+  // PlotsPurchased watcher so all plots bought in one tx are outlined together.
+  // Maps plotId -> batchKey (`${owner}|${txHash}`).
+  const purchaseBatchRef = useRef<Map<number, string>>(new Map());
+  const purchaseBatchMembersRef = useRef<Map<string, number[]>>(new Map());
   const imageCacheRef = useRef<Map<string, HTMLImageElement | "error">>(
     new Map(),
   );
@@ -327,6 +337,60 @@ export function BaseBoardCanvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address]);
 
+  // -------------------------------------------------------------------
+  // Contiguous-block computation for grid-line suppression.
+  // Groups owned plots into 4-directionally-connected clusters by owner.
+  // Only rebuilds when plot data actually changes, not every frame.
+  // -------------------------------------------------------------------
+  const computePlotBlocks = useCallback(() => {
+    const map = plotMapRef.current;
+    const blockMap = plotBlockRef.current;
+    const membersMap = plotBlockMembersRef.current;
+    blockMap.clear();
+    membersMap.clear();
+    const visited = new Set<number>();
+    let nextBlockId = 0;
+
+    for (const [plotId, plot] of map) {
+      if (plot.owner.toLowerCase() === ZERO_ADDRESS) continue;
+      if (visited.has(plotId)) continue;
+
+      const owner = plot.owner.toLowerCase();
+      const blockKey = `${owner}|${nextBlockId++}`;
+      const queue = [plotId];
+      visited.add(plotId);
+      const members: number[] = [];
+
+      while (queue.length) {
+        const cur = queue.shift()!;
+        blockMap.set(cur, blockKey);
+        members.push(cur);
+        const { x, y } = xyFromPlotId(cur);
+
+        const neighbors: Array<[number, number]> = [
+          [x - 1, y],
+          [x + 1, y],
+          [x, y - 1],
+          [x, y + 1],
+        ];
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue;
+          const nid = plotIdFromXY(nx, ny);
+          if (visited.has(nid)) continue;
+          const nplot = map.get(nid);
+          if (nplot && nplot.owner.toLowerCase() === owner) {
+            visited.add(nid);
+            queue.push(nid);
+          }
+        }
+      }
+
+      membersMap.set(blockKey, members);
+    }
+
+    plotBlockDirtyRef.current = false;
+  }, []);
+
   const renderBoard = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -335,6 +399,9 @@ export function BaseBoardCanvas() {
 
     const { width, height, dpr } = sizeRef.current;
     const cam = cameraRef.current;
+
+    // Rebuild contiguous-block membership when plot data has changed.
+    if (plotBlockDirtyRef.current) computePlotBlocks();
 
     // ----------------------------------------------------------------
     // Phase 1: Composite the static board layer onto the offscreen
@@ -426,16 +493,64 @@ export function BaseBoardCanvas() {
       offCtx.strokeStyle = `rgba(59,130,246,${0.35 * gridAlpha})`;
       offCtx.lineWidth = 1;
       offCtx.beginPath();
+
+      const blockMap = plotBlockRef.current;
+      const vTop = Math.max(0, boardTop);
+      const vBottom = Math.min(height, boardTop + boardSize);
+      const hLeft = Math.max(0, boardLeft);
+      const hRight = Math.min(width, boardLeft + boardSize);
+
+      // Vertical lines — skip segments where both adjacent cells belong to
+      // the same contiguous owned block (internal edges).
       for (let x = startX; x <= endX + 1; x++) {
         const sx = Math.round(cellToScreenX(x)) + 0.5;
-        offCtx.moveTo(sx, Math.max(0, boardTop));
-        offCtx.lineTo(sx, Math.min(height, boardTop + boardSize));
+        let segStart = vTop;
+        for (let y = startY; y <= endY; y++) {
+          const cellLeftId = plotIdFromXY(x - 1, y);
+          const cellRightId = plotIdFromXY(x, y);
+          const leftBlock = blockMap.get(cellLeftId);
+          const rightBlock = blockMap.get(cellRightId);
+          if (leftBlock && leftBlock === rightBlock) {
+            const yTop = Math.round(cellToScreenY(y)) + 0.5;
+            const yBot = Math.round(cellToScreenY(y + 1)) + 0.5;
+            if (yTop > segStart) {
+              offCtx.moveTo(sx, segStart);
+              offCtx.lineTo(sx, yTop);
+            }
+            segStart = yBot;
+          }
+        }
+        if (vBottom > segStart) {
+          offCtx.moveTo(sx, segStart);
+          offCtx.lineTo(sx, vBottom);
+        }
       }
+
+      // Horizontal lines — same logic: skip internal edges within a block.
       for (let y = startY; y <= endY + 1; y++) {
         const sy = Math.round(cellToScreenY(y)) + 0.5;
-        offCtx.moveTo(Math.max(0, boardLeft), sy);
-        offCtx.lineTo(Math.min(width, boardLeft + boardSize), sy);
+        let segStart = hLeft;
+        for (let x = startX; x <= endX; x++) {
+          const cellTopId = plotIdFromXY(x, y - 1);
+          const cellBottomId = plotIdFromXY(x, y);
+          const topBlock = blockMap.get(cellTopId);
+          const bottomBlock = blockMap.get(cellBottomId);
+          if (topBlock && topBlock === bottomBlock) {
+            const xLeft = Math.round(cellToScreenX(x)) + 0.5;
+            const xRight = Math.round(cellToScreenX(x + 1)) + 0.5;
+            if (xLeft > segStart) {
+              offCtx.moveTo(segStart, sy);
+              offCtx.lineTo(xLeft, sy);
+            }
+            segStart = xRight;
+          }
+        }
+        if (hRight > segStart) {
+          offCtx.moveTo(segStart, sy);
+          offCtx.lineTo(hRight, sy);
+        }
       }
+
       offCtx.stroke();
       offCtx.restore();
     }
@@ -473,18 +588,50 @@ export function BaseBoardCanvas() {
     // rects — so they don't need the offscreen pass.
     // ----------------------------------------------------------------
 
-    // ---- Hover highlight ----
+    // ---- Hover highlight (transaction-batch aware) ----
     const hov = hoverCellRef.current;
     if (hov && cam.scale > 2) {
       ctx.save();
       ctx.strokeStyle = "rgba(0,82,255,0.9)";
       ctx.lineWidth = 2;
-      ctx.strokeRect(
-        cellToScreenX(hov.x),
-        cellToScreenY(hov.y),
-        cam.scale,
-        cam.scale,
-      );
+      const hovId = plotIdFromXY(hov.x, hov.y);
+      // Prefer purchase batch grouping (plots bought together in one tx).
+      // Fall back to contiguous block grouping for older plots.
+      const batchKey = purchaseBatchRef.current.get(hovId);
+      const hovMembers = batchKey
+        ? (purchaseBatchMembersRef.current.get(batchKey) ?? null)
+        : null;
+      const outlineMembers = hovMembers ?? (() => {
+        const bk = plotBlockRef.current.get(hovId);
+        return bk ? (plotBlockMembersRef.current.get(bk) ?? null) : null;
+      })();
+      if (outlineMembers) {
+        const outlineSet = new Set(outlineMembers);
+        ctx.beginPath();
+        for (const id of outlineMembers) {
+          const { x, y } = xyFromPlotId(id);
+          const l = Math.round(cellToScreenX(x)) + 0.5;
+          const t = Math.round(cellToScreenY(y)) + 0.5;
+          const r = Math.round(cellToScreenX(x + 1)) + 0.5;
+          const b = Math.round(cellToScreenY(y + 1)) + 0.5;
+          const tId = plotIdFromXY(x, y - 1);
+          const rId = plotIdFromXY(x + 1, y);
+          const bId = plotIdFromXY(x, y + 1);
+          const lId = plotIdFromXY(x - 1, y);
+          if (!outlineSet.has(tId)) { ctx.moveTo(l, t); ctx.lineTo(r, t); }
+          if (!outlineSet.has(rId)) { ctx.moveTo(r, t); ctx.lineTo(r, b); }
+          if (!outlineSet.has(bId)) { ctx.moveTo(l, b); ctx.lineTo(r, b); }
+          if (!outlineSet.has(lId)) { ctx.moveTo(l, t); ctx.lineTo(l, b); }
+        }
+        ctx.stroke();
+      } else {
+        ctx.strokeRect(
+          Math.round(cellToScreenX(hov.x)) + 0.5,
+          Math.round(cellToScreenY(hov.y)) + 0.5,
+          cam.scale,
+          cam.scale,
+        );
+      }
       ctx.restore();
     }
 
@@ -743,78 +890,44 @@ export function BaseBoardCanvas() {
 
           const lod = getLod(g.uri, img);
 
-          // Icon-mode preview at extreme zoom: when the whole group would be
-          // smaller than MIN_ICON_PX on screen, draw a proportionally-sized
-          // thumbnail centered on the group.  1×1 groups get the smallest icon
-          // and the largest visible group gets the biggest, preserving relative
-          // size differences.
-          if (w < MIN_ICON_PX && h < MIN_ICON_PX) {
-            const cw = bx2 - bx1 + 1;
-            const ch = by2 - by1 + 1;
-            const span = Math.min(cw, ch);
-            const t =
-              maxIconSpan > 1 ? (span - 1) / (maxIconSpan - 1) : 0;
-            const iconSize = Math.round(
-              MIN_ICON_PX + t * (MAX_ICON_PX - MIN_ICON_PX),
-            );
-            const src = lod ? lod.thumb : img;
-            ctx.drawImage(
-              src,
-              dx + (w - iconSize) / 2,
-              dy + (h - iconSize) / 2,
-              iconSize,
-              iconSize,
-            );
-          } else {
-            // First clip to the exact zone/cell bbox to prevent any sub-pixel
-            // anti-aliasing bleed at low zoom levels.
+          // At extreme zoom the bbox is just a few pixels — use the
+          // proportionally-sized icon mode (no cell clip) so that large
+          // vs small blocks are visually distinct. At closer zoom we
+          // clip to the individual cells to prevent image bleed into
+          // empty gaps between non‑contiguous plots.
+          const extremeZoom = w < MIN_ICON_PX && h < MIN_ICON_PX;
+
+          if (!extremeZoom) {
+            // First clip to the exact zone/cell bbox to prevent any
+            // sub-pixel anti-aliasing bleed at low zoom levels.
             ctx.beginPath();
             ctx.rect(dx, dy, w, h);
             ctx.clip();
 
-            // Second clip to the individual owned cells (or bbox when zoomed out).
+            // Second clip to the individual owned cells so the image
+            // never bleeds onto empty gaps.
             ctx.beginPath();
-            if (!preciseClip) {
-              // Zoomed out: cells are sub-pixel, so a precise per-cell clip is
-              // wasted work — draw the artwork across the whole span bbox cheaply.
-              ctx.rect(dx, dy, w, h);
-            } else if (g.zone) {
-              // Clip to every grid cell the owner holds inside the zone so the
-              // artwork never bleeds onto neighbouring plots. Iterating the zone
-              // bbox directly (rather than filtering the full plot map by owner
-              // + imageUri) guarantees that all cells under the zone are
-              // included — even when non‑anchor cells carry a stale/empty
-              // imageUri that would have failed the per‑image check.
+            if (g.zone) {
               let clipped = 0;
-              let debugCells: string[] = [];
               for (let cz = by1; cz <= by2; cz++) {
                 for (let cx = bx1; cx <= bx2; cx++) {
                   const cellId = cz * GRID_SIZE + cx;
                   const cell = map.get(cellId);
-                  if (!cell) { debugCells.push(`(${cx},${cz}) noMap`); continue; }
-                  if (cell.owner.toLowerCase() !== g.owner) {
-                    const ownerPrefix = cell.owner.slice(0, 6);
-                    const gPrefix = g.owner.slice(0, 6);
-                    debugCells.push(`(${cx},${cz}) owner${ownerPrefix}!=group${gPrefix}`);
-                    continue;
-                  }
+                  if (!cell) continue;
+                  if (cell.owner.toLowerCase() !== g.owner) continue;
                   if (cell.imageUri) {
                     const cellZone = parseZone(cell.imageUri);
-                    if (cellZone && (cellZone.x1 !== bx1 || cellZone.y1 !== by1)) {
-                      debugCells.push(`(${cx},${cz}) diffZone(${cellZone.x1},${cellZone.y1})`);
-                      continue;
-                    }
+                    if (cellZone && (cellZone.x1 !== bx1 || cellZone.y1 !== by1)) continue;
                   }
                   ctx.rect(
                     Math.floor(cellToScreenX(cx)),
                     Math.floor(cellToScreenY(cz)),
-                    Math.ceil(cam.scale),
-                    Math.ceil(cam.scale),
+                    Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0),
+                    Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0),
                   );
                   clipped++;
                 }
               }
-              console.log(`🔍 zone clip: bbox=${bx1},${by1},${bx2},${by2} clipped=${clipped} cells=`, debugCells);
               if (clipped === 0) {
                 ctx.restore();
                 dirtyRef.current = true;
@@ -825,12 +938,26 @@ export function BaseBoardCanvas() {
                 ctx.rect(
                   Math.floor(cellToScreenX(c.x)),
                   Math.floor(cellToScreenY(c.y)),
-                  Math.ceil(cam.scale),
-                  Math.ceil(cam.scale),
+                  Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0),
+                  Math.ceil(cam.scale) + (cam.scale < 0.5 ? 1 : 0),
                 );
               });
             }
             ctx.clip();
+          }
+
+          // Icon-mode preview (proportional) at extreme zoom — single
+          // icon at bbox centre.  At closer zoom draw across the full
+          // bbox; the cell clip handles the rest.
+          if (extremeZoom) {
+            const cw = bx2 - bx1 + 1;
+            const ch = by2 - by1 + 1;
+            const span = Math.min(cw, ch);
+            const t = maxIconSpan > 1 ? (span - 1) / (maxIconSpan - 1) : 0;
+            const iconSize = Math.round(MIN_ICON_PX + t * (MAX_ICON_PX - MIN_ICON_PX));
+            const src = lod ? lod.thumb : img;
+            ctx.drawImage(src, dx + (w - iconSize) / 2, dy + (h - iconSize) / 2, iconSize, iconSize);
+          } else {
             try {
               const useFull = preciseClip && !manyGroups;
               const src = useFull || !lod ? img : lod.thumb;
@@ -1150,16 +1277,27 @@ export function BaseBoardCanvas() {
     address: cfg.isConfigured ? cfg.contract : undefined,
     abi: baseBoardAbi,
     eventName: "PlotsPurchased",
-    onLogs(logs: { args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint }[]) {
+    onLogs(logs: Array<{ args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint; transactionHash?: string }>) {
       if (logs.length === 0) return;
+      const batchMap = purchaseBatchRef.current;
+      const batchMembersMap = purchaseBatchMembersRef.current;
       const newPlotIds: number[] = [];
-      logs.forEach((log: { args?: { plotIds?: readonly bigint[] }; blockNumber?: bigint }) => {
+      logs.forEach((log) => {
         const args = log.args as { plotIds?: readonly bigint[] };
+        const txHash = log.transactionHash || String(log.blockNumber ?? 0n);
         args.plotIds?.forEach((b) => {
           const id = Number(b);
           newPlotIds.push(id);
           purchaseBlockRef.current.set(id, Number(log.blockNumber ?? 0n));
         });
+        // Group all plots from this tx into one batch for hover highlight.
+        // Owner will be filled from chain response below.
+        if (args.plotIds && args.plotIds.length > 0) {
+          const plotIds = args.plotIds.map(Number);
+          for (const id of plotIds) {
+            batchMap.set(id, `pending|${txHash}`);
+          }
+        }
       });
       if (newPlotIds.length === 0) return;
       // Batch-read just the newly purchased plots from chain.
@@ -1189,6 +1327,29 @@ export function BaseBoardCanvas() {
           if (plot.owner.toLowerCase() !== ZERO_ADDRESS) map.set(id, plot);
           else map.delete(id);
         });
+        plotBlockDirtyRef.current = true;
+        // Update purchase batch entries with actual owner
+        const batchMembersMap = purchaseBatchMembersRef.current;
+        batchMembersMap.clear();
+        const pendingBatchKeys = new Map<string, number[]>();
+        result.forEach((plot, i) => {
+          const id = newPlotIds[i];
+          const existingKey = purchaseBatchRef.current.get(id);
+          if (existingKey && existingKey.startsWith("pending|")) {
+            const txHash = existingKey.slice(8);
+            const owner = plot.owner.toLowerCase();
+            if (owner !== ZERO_ADDRESS) {
+              const batchKey = `${owner}|${txHash}`;
+              purchaseBatchRef.current.set(id, batchKey);
+              const arr = pendingBatchKeys.get(batchKey);
+              if (arr) arr.push(id);
+              else pendingBatchKeys.set(batchKey, [id]);
+            }
+          }
+        });
+        for (const [key, ids] of pendingBatchKeys) {
+          batchMembersMap.set(key, ids);
+        }
         // Chain'den gerçek veri geldi — bu ID'ler için optimistic
         // override'ları temizle (imageUri veya owner değişmiş olabilir).
         {
@@ -1250,6 +1411,7 @@ export function BaseBoardCanvas() {
         }
       });
       if (!changed) return;
+      plotBlockDirtyRef.current = true;
       // Persist to Turso immediately (no need to wait for the indexer)
       logs.forEach((log) => {
         const args = log.args;
@@ -1305,6 +1467,7 @@ export function BaseBoardCanvas() {
       Object.entries(cached).forEach(([id, plot]) => {
         map.set(Number(id), plot);
       });
+      plotBlockDirtyRef.current = true;
       preloadImages(cached);
       dirtyRef.current = true;
       forceTick((t) => t + 1);
@@ -1328,6 +1491,7 @@ export function BaseBoardCanvas() {
     for (const [id, plot] of Object.entries(optimistic)) {
       map.set(Number(id), plot);
     }
+    plotBlockDirtyRef.current = true;
 
     // Turso'dan gerçek veri gelen optimistic entry'leri temizle.
     // Owner/imageUri eşleşmesine bakma — Turso'da satır varsa otoriter
@@ -1369,7 +1533,10 @@ export function BaseBoardCanvas() {
     if (prevChainRef.current === chainId) return;
     prevChainRef.current = chainId;
     plotMapRef.current.clear();
+    plotBlockDirtyRef.current = true;
     purchaseBlockRef.current.clear();
+    purchaseBatchRef.current.clear();
+    purchaseBatchMembersRef.current.clear();
     latestBlockRef.current = 0;
     lastSuccessfulFetchRef.current = 0;
     densityCanvasRef.current = null;
@@ -1414,6 +1581,7 @@ export function BaseBoardCanvas() {
       changed = true;
     });
     if (changed) {
+      plotBlockDirtyRef.current = true;
       dirtyRef.current = true;
       forceTick((t) => t + 1);
     }
