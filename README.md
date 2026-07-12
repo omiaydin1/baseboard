@@ -13,9 +13,9 @@
   [![Next.js](https://img.shields.io/badge/Next.js-15-000?logo=next.js)](https://nextjs.org)
   [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=fff)](tsconfig.json)
   [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-  [![Vercel](https://img.shields.io/badge/Deploy-Vercel-000?logo=vercel)](https://baseboard-seven.vercel.app)
+  [![Vercel](https://img.shields.io/badge/Deploy-Vercel-000?logo=vercel)](https://baseboard.live)
 
-  **[baseboard-seven.vercel.app](https://baseboard-seven.vercel.app)**
+  **[baseboard.live](https://baseboard.live)**
 </div>
 
 ---
@@ -181,7 +181,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | **Grid** | 3,162 × 3,162 = 9,998,244 plots |
 | **Plot Price** | 0.00005 ETH (flat) |
 | **Treasury** | `0xce83...f1e2` |
-| **App** | [baseboard-seven.vercel.app](https://baseboard-seven.vercel.app) |
+| **App** | [baseboard.live](https://baseboard.live) |
 
 ---
 
@@ -194,7 +194,7 @@ MIT
 <div align="center">
   <sub>
     BaseBoard · On-chain since block 47,083,347 ·
-    <a href="https://baseboard-seven.vercel.app">baseboard-seven.vercel.app</a>
+    <a href="https://baseboard.live">baseboard.live</a>
   </sub>
   <br>
   <sub>
