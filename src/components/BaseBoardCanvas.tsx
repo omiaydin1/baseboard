@@ -22,6 +22,7 @@ import {
 } from "@/lib/density";
 import type { Plot } from "@/lib/types";
 import { useBoardStore } from "@/store/useBoardStore";
+import { useShallow } from "zustand/react/shallow";
 import { fetchTursoBoard } from "@/lib/tursoClient";
 
 type Tool = "pan" | "select";
@@ -119,21 +120,44 @@ export function BaseBoardCanvas() {
   const chainId = useChainId();
   const cfg = useActiveChainConfig();
 
-  const openPlot = useBoardStore((s) => s.openPlot);
-  const setBuySelection = useBoardStore((s) => s.setBuySelection);
-  const refreshNonce = useBoardStore((s) => s.refreshNonce);
-  const focusPlotId = useBoardStore((s) => s.focusPlotId);
-  const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
-  const focusBounds = useBoardStore((s) => s.focusBounds);
-  const setFocusBounds = useBoardStore((s) => s.setFocusBounds);
-  const selectMode = useBoardStore((s) => s.selectMode);
-  const toggleSelectMode = useBoardStore((s) => s.toggleSelectMode);
-  const basket = useBoardStore((s) => s.basket);
-  const toggleBasketPlot = useBoardStore((s) => s.toggleBasketPlot);
-  const clearBasket = useBoardStore((s) => s.clearBasket);
-  const setDirectBuyIds = useBoardStore((s) => s.setDirectBuyIds);
-  const optimisticPlots = useBoardStore((s) => s.optimisticPlots);
-  const clearOptimisticPlots = useBoardStore((s) => s.clearOptimisticPlots);
+  const store = useBoardStore(
+    useShallow((s) => ({
+      openPlot: s.openPlot,
+      setBuySelection: s.setBuySelection,
+      refreshNonce: s.refreshNonce,
+      focusPlotId: s.focusPlotId,
+      setFocusPlotId: s.setFocusPlotId,
+      focusBounds: s.focusBounds,
+      setFocusBounds: s.setFocusBounds,
+      selectMode: s.selectMode,
+      toggleSelectMode: s.toggleSelectMode,
+      basket: s.basket,
+      toggleBasketPlot: s.toggleBasketPlot,
+      clearBasket: s.clearBasket,
+      setDirectBuyIds: s.setDirectBuyIds,
+      optimisticPlots: s.optimisticPlots,
+      clearOptimisticPlots: s.clearOptimisticPlots,
+      densityEnabled: s.densityEnabled,
+    })),
+  );
+  const {
+    openPlot,
+    setBuySelection,
+    refreshNonce,
+    focusPlotId,
+    setFocusPlotId,
+    focusBounds,
+    setFocusBounds,
+    selectMode,
+    toggleSelectMode,
+    basket,
+    toggleBasketPlot,
+    clearBasket,
+    setDirectBuyIds,
+    optimisticPlots,
+    clearOptimisticPlots,
+    densityEnabled,
+  } = store;
 
   const [tool, setTool] = useState<Tool>("pan");
   const [zoomLabel, setZoomLabel] = useState(1);
@@ -1005,7 +1029,7 @@ export function BaseBoardCanvas() {
 
       const retryEntry = imageRetryRef.current.get(key);
       const attempt = retryEntry ? retryEntry.attempt + 1 : 0;
-      const TIMEOUT_MS = 30_000;
+      const TIMEOUT_MS = 8_000;
 
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -1142,7 +1166,7 @@ export function BaseBoardCanvas() {
   const preloadImages = useCallback(
     (plots: Record<number, { imageUri: string }>) => {
       const cache = imageCacheRef.current;
-      const TIMEOUT_MS = 30_000;
+      const TIMEOUT_MS = 8_000;
       let seq = 0;
       for (const plot of Object.values(plots)) {
         const uri = plot.imageUri;
@@ -1207,7 +1231,6 @@ export function BaseBoardCanvas() {
   // Heatmap on/off. Mirrored into a ref so the render loop reads it without
   // re-creating `renderBoard`. When off we neither bake nor draw the field.
   // (The on/off sync effect lives just after `bakeDensity` is defined below.)
-  const densityEnabled = useBoardStore((s) => s.densityEnabled);
   const densityEnabledRef = useRef(densityEnabled);
 
   // Rebuild the baked density field from the current owned plots. Each owned

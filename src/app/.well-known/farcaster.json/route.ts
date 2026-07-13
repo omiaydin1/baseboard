@@ -42,15 +42,9 @@ export function GET(req: Request) {
   // Signed proof of domain custody (generated via Warpcast's manifest tool for
   // base-board-pixel.vercel.app). Env vars override for other domains.
   const accountAssociation = {
-    header:
-      process.env.FARCASTER_HEADER ??
-      "eyJmaWQiOjEzNTY2NjIsInR5cGUiOiJhdXRoIiwia2V5IjoiMHgxNTUwQjBGRmY1NUVjMDU0NDgwMjREOTYxNmI5RDFFOTk5YTQ3RWYzIn0",
-    payload:
-      process.env.FARCASTER_PAYLOAD ??
-      "eyJkb21haW4iOiJiYXNlLWJvYXJkLXBpeGVsLnZlcmNlbC5hcHAifQ",
-    signature:
-      process.env.FARCASTER_SIGNATURE ??
-      "ZzxNz7F7o1DqSt/VQwsWDVCHzcetKGKSABALrz/cqU9uNfN3HMzm0NEhjmyMxPIT++hTbdaW/QFwSxw+3NeD/Bs=",
+    header: process.env.FARCASTER_HEADER ?? "",
+    payload: process.env.FARCASTER_PAYLOAD ?? "",
+    signature: process.env.FARCASTER_SIGNATURE ?? "",
   };
 
   const manifest = {
