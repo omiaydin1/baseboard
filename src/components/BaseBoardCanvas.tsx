@@ -110,8 +110,7 @@ const IPFS_GATEWAYS = [
   (cid: string) => `https://ipfs.io/ipfs/${cid}`,
 ];
 
-// Shared AbortController ref so a new fetchFromTurso cancels any in-flight one.
-const _fetchAbortRef: { current: AbortController | null } = { current: null };
+
 
 /**
  * High-performance, virtualized HTML5 canvas renderer for the 3162x3162 grid.
@@ -1514,18 +1513,14 @@ export function BaseBoardCanvas() {
       dirtyRef.current = true;
     }
 
-    const abortRef = _fetchAbortRef;
-    if (abortRef?.current) abortRef.current.abort();
-    const ac = new AbortController();
-    if (abortRef) abortRef.current = ac;
     const since = lastSuccessfulFetchRef.current > 0 ? lastSuccessfulFetchRef.current : undefined;
-    const res = await fetchTursoBoard(undefined, ac.signal, since);
+    const res = await fetchTursoBoard(undefined, undefined, since);
     if (!res?.fromCache) return;
     const map = plotMapRef.current;
     Object.entries(res.plots).forEach(([id, plot]) => {
       const existing = map.get(Number(id));
-      if (existing && existing.imageUri && !plot.imageUri) {
-        // Turso has stale data (image not yet indexed) — keep the live data.
+      if (existing && existing.imageUri && existing.imageUri !== plot.imageUri) {
+        // Turso has stale data (image not yet upserted) — keep the live data.
         return;
       }
       map.set(Number(id), plot);
