@@ -42,7 +42,7 @@ function baseWalletConnector(): CreateConnectorFn {
     appLogoUrl: APP_LOGO_URL,
     preference: "smartWalletOnly",
   });
-  return (params) => {
+  return (params: any) => {
     const connector = inner(params);
     return { ...connector, id: BASE_WALLET_ID, name: "Base Wallet" };
   };

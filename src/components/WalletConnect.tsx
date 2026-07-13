@@ -71,6 +71,8 @@ function ConnectorIcon({ connector }: { connector: Connector }) {
         src={icon}
         alt=""
         aria-hidden
+        width={28}
+        height={28}
         className="h-7 w-7 shrink-0 rounded-lg object-contain"
       />
     );

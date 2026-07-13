@@ -184,7 +184,7 @@ export function ProfileDrawer() {
             address: cfg.contract,
             abi: baseBoardAbi,
             functionName: "getPlotsBatch",
-            args: [ids.map((i) => BigInt(i))],
+            args: [ids.map((i: number) => BigInt(i))],
           }),
         )) as readonly Plot[];
         if (cancelled) return;
@@ -582,6 +582,8 @@ function OwnedPlotRow({
           <img
             src={previewSrc(plot.imageUri)}
             alt=""
+            width={36}
+            height={36}
             className="h-9 w-9 shrink-0 rounded-md border border-blue-100 object-cover"
           />
         ) : (
@@ -619,6 +621,8 @@ function OwnedPlotRow({
         <img
           src={previewSrc(plot.imageUri)}
           alt="plot"
+          width="100%"
+          height={80}
           className="mt-2 h-20 w-full rounded-lg border border-blue-100 object-cover"
         />
       )}
@@ -963,6 +967,8 @@ function LargeClusterRow({
         <img
           src={previewSrc(anchorPlot.imageUri)}
           alt="cluster"
+          width="100%"
+          height={80}
           className="mt-2 h-20 w-full rounded-lg border border-blue-100 object-cover"
         />
       )}
@@ -1252,6 +1258,7 @@ function ImageUploader({
         <img
           src={previewSrc(value)}
           alt="preview"
+          width="100%"
           className="w-full rounded-lg border border-blue-100 bg-slate-50 object-contain"
           style={
             aspect

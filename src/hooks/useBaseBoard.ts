@@ -308,7 +308,7 @@ export function useBaseBoardWrite() {
 
   type WriteAsync = typeof writeContractAsync;
   const writeContractAsyncGuarded = useCallback<WriteAsync>(
-    ((variables, options) => {
+    ((variables: any, options: any) => {
       // Pin every write to the active chain (Base) so transactions always land
       // on the network whose contract the UI is reading from.
       const cfg = getChainConfig(chainId) ?? DEFAULT_CHAIN_CONFIG;
@@ -542,7 +542,7 @@ function loadPersistedScan(contract?: string): PersistedScan | null {
   }
 }
 
-function savePersistedScan(contract: string | undefined, snap: PersistedScan) {
+function savePersistedScan(contract: string | undefined, snap: Omit<PersistedScan, "storedAt">) {
   if (typeof window === "undefined") return;
   const key = scanCacheKey(contract);
   if (!key) return;
@@ -765,7 +765,7 @@ export function useAllMintedPlots(): AllMintedData {
                 fromBlock: BigInt(start),
                 toBlock: BigInt(end),
               });
-              logs.forEach((log) => {
+              logs.forEach((log: any) => {
                 const args = log.args as {
                   buyer?: `0x${string}`;
                   plotIds?: readonly bigint[];

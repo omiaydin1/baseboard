@@ -146,6 +146,8 @@ export function PlotModal() {
                 <img
                   src={displayImage}
                   alt="pixel artwork"
+                  width="100%"
+                  height={160}
                   className="h-40 w-full rounded-xl border-2 border-blue-100 bg-slate-50 object-contain"
                 />
               )}

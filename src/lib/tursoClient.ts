@@ -48,6 +48,10 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T | null
     }
     return (await res.json()) as T;
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      // Expected when previous request is cancelled — suppress the noise.
+      return null;
+    }
     console.error(`fetchJson ${url} failed:`, err);
     return null;
   }

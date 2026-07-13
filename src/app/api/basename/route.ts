@@ -3,8 +3,10 @@ import { getTursoClient, getBasenames } from "@/lib/turso";
 import { checkRateLimit } from "@/lib/rateLimit";
 
 function clientIp(req: NextRequest): string {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
-  return ip ?? "unknown";
+  return (req as { ip?: string }).ip
+    ?? req.headers.get("x-real-ip")
+    ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? "unknown";
 }
 
 export async function GET(req: NextRequest) {

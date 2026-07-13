@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAddress } from "viem";
 import { getTursoClient, isTursoConfigured, upsertPlot } from "@/lib/turso";
 import { TOTAL_PLOTS } from "@/lib/constants";
 import { checkRateLimit } from "@/lib/rateLimit";
 
 const MAX_BODY_BYTES = 1024;
-const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
 interface UpsertBody {
   plotId: number;
@@ -25,8 +25,10 @@ function isAllowedOrigin(req: NextRequest): boolean {
 }
 
 function clientIp(req: NextRequest): string {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
-  return ip ?? "unknown";
+  return (req as { ip?: string }).ip
+    ?? req.headers.get("x-real-ip")
+    ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? "unknown";
 }
 
 export async function POST(req: NextRequest) {
@@ -65,8 +67,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Invalid plotId" }, { status: 400 });
     }
 
-    // owner: required, valid Ethereum address
-    if (!body.owner || !ETH_ADDRESS_RE.test(body.owner)) {
+    // owner: required, valid Ethereum address with EIP-55 checksum
+    try {
+      body.owner = getAddress(body.owner);
+    } catch {
       return NextResponse.json({ ok: false, error: "Invalid owner address" }, { status: 400 });
     }
 
