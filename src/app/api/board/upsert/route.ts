@@ -4,7 +4,7 @@ import { getTursoClient, isTursoConfigured, upsertPlot } from "@/lib/turso";
 import { TOTAL_PLOTS } from "@/lib/constants";
 import { checkRateLimit } from "@/lib/rateLimit";
 
-const MAX_BODY_BYTES = 1024;
+const MAX_BODY_BYTES = 1_048_576; // 1 MB — data URIs can be large
 
 interface UpsertBody {
   plotId: number;
@@ -86,8 +86,8 @@ export async function POST(req: NextRequest) {
     }
 
     // isForSale: optional boolean
-    // imageUri: optional, length check
-    if (body.imageUri && body.imageUri.length > 4096) {
+    // imageUri: optional, length check (data URIs can be large)
+    if (body.imageUri && body.imageUri.length > 100_000) {
       return NextResponse.json({ ok: false, error: "imageUri too long" }, { status: 400 });
     }
 

@@ -474,6 +474,7 @@ function OwnedPlotRow({
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
+  const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
   const { writeContractAsync, setPendingTxLabel, status, isSuccess, error } =
     useBaseBoardWrite();
   const [action, setAction] = useState<Action>("none");
@@ -491,11 +492,12 @@ function OwnedPlotRow({
         applyOptimisticPlots(pendingOverrideRef.current);
         pendingOverrideRef.current = null;
       }
+      bumpRefresh();
       pushToast("success", `${pendingLabel} confirmed`);
       setPendingLabel(null);
       setAction("none");
     }
-  }, [isSuccess, pendingLabel, pushToast, applyOptimisticPlots]);
+  }, [isSuccess, pendingLabel, pushToast, applyOptimisticPlots, bumpRefresh]);
 
   const submit = async (label: string, fn: () => Promise<unknown>) => {
     setLocalError(null);
@@ -679,6 +681,7 @@ function MultiImagePanel({
 }) {
   const pushToast = useBoardStore((s) => s.pushToast);
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
+  const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
@@ -710,6 +713,7 @@ function MultiImagePanel({
         applyOptimisticPlots(pendingOverrideRef.current);
         pendingOverrideRef.current = null;
       }
+      bumpRefresh();
       pushToast("success", `Image applied across ${selected.length} pixels`);
       setPending(false);
       onDone();
@@ -792,6 +796,7 @@ function LargeClusterRow({
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const pushToast = useBoardStore((s) => s.pushToast);
   const applyOptimisticPlots = useBoardStore((s) => s.applyOptimisticPlots);
+  const bumpRefresh = useBoardStore((s) => s.bumpRefresh);
   const { writeContractAsync, setPendingTxLabel, status, isSuccess, error } =
     useBaseBoardWrite();
 
@@ -813,11 +818,12 @@ function LargeClusterRow({
         applyOptimisticPlots(pendingOverrideRef.current);
         pendingOverrideRef.current = null;
       }
+      bumpRefresh();
       pushToast("success", `${pendingLabel} confirmed`);
       setPendingLabel(null);
       setAction("none");
     }
-  }, [isSuccess, pendingLabel, pushToast, applyOptimisticPlots]);
+  }, [isSuccess, pendingLabel, pushToast, applyOptimisticPlots, bumpRefresh]);
 
   const submit = async (label: string, fn: () => Promise<unknown>) => {
     setLocalError(null);
