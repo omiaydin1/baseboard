@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured, getPlotBatch, getAllPlots } from "@/lib/turso";
+import { checkRateLimit } from "@/lib/rateLimit";
 
 /**
  * Wire format for Turso-served plot data. `price` is a decimal string because
@@ -27,7 +28,16 @@ interface BoardResponse {
  * GET /api/board?ids=all            — returns ALL owned plots
  * GET /api/board?ids=all&since=123  — only plots updated after timestamp
  */
+function clientIp(req: NextRequest): string {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
+  return ip ?? "unknown";
+}
+
 export async function GET(req: NextRequest) {
+  if (!checkRateLimit(clientIp(req))) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   if (!isTursoConfigured()) {
     return NextResponse.json({ plots: {}, fromCache: false } satisfies BoardResponse);
   }

@@ -72,10 +72,16 @@ function validateImageRef(ref: string): string | null {
   return null;
 }
 
+const PREVIEW_GATEWAYS = [
+  (cid: string) => `https://nftstorage.link/ipfs/${cid}`,
+  (cid: string) => `https://dweb.link/ipfs/${cid}`,
+  (cid: string) => `https://ipfs.io/ipfs/${cid}`,
+];
+
 /** Resolve ipfs:// for an <img> preview. */
 function previewSrc(ref: string): string {
   if (ref.startsWith("ipfs://"))
-    return `https://ipfs.io/ipfs/${ref.slice("ipfs://".length)}`;
+    return PREVIEW_GATEWAYS[0](ref.slice("ipfs://".length));
   return ref;
 }
 
@@ -202,15 +208,17 @@ export function ProfileDrawer() {
                 diffs.push({ id, rpcUri: rpc.imageUri, tursoUri: turso.imageUri });
               }
             });
-            if (diffs.length > 0) {
-              console.warn(
-                `[ProfileDrawer] RPC/Turso imageUri mismatch for ${diffs.length}/${ids.length} plot(s)`,
-                diffs,
-              );
-            } else {
-              console.log(
-                `[ProfileDrawer] RPC/Turso imageUri match (${ids.length} plot(s))`,
-              );
+            if (process.env.NODE_ENV !== "production") {
+              if (diffs.length > 0) {
+                console.warn(
+                  `[ProfileDrawer] RPC/Turso imageUri mismatch for ${diffs.length}/${ids.length} plot(s)`,
+                  diffs,
+                );
+              } else {
+                console.log(
+                  `[ProfileDrawer] RPC/Turso imageUri match (${ids.length} plot(s))`,
+                );
+              }
             }
           });
         }

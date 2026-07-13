@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured, upsertPlot } from "@/lib/turso";
 import { TOTAL_PLOTS } from "@/lib/constants";
+import { checkRateLimit } from "@/lib/rateLimit";
 
 const MAX_BODY_BYTES = 1024;
 const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -27,7 +28,16 @@ function isAllowedOrigin(req: NextRequest): boolean {
   return origin === APP_URL || referer.startsWith(APP_URL);
 }
 
+function clientIp(req: NextRequest): string {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
+  return ip ?? "unknown";
+}
+
 export async function POST(req: NextRequest) {
+  if (!checkRateLimit(clientIp(req))) {
+    return NextResponse.json({ ok: false, error: "Too many requests" }, { status: 429 });
+  }
+
   if (!isTursoConfigured()) {
     return NextResponse.json({ ok: false, error: "Turso not configured" }, { status: 500 });
   }

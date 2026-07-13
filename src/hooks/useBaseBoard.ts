@@ -337,7 +337,7 @@ export function useBaseBoardWrite() {
                 params: [{ chainId: hexChainId }],
               });
             } catch (switchErr: unknown) {
-              const code = (switchErr as { code?: number })?.code;
+              const code = typeof switchErr === "object" && switchErr != null ? (switchErr as Record<string, unknown>).code : undefined;
               if (code === 4902 || code === -32603) {
                 await provider.request({
                   method: "wallet_addEthereumChain",

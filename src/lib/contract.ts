@@ -294,5 +294,7 @@ export function readContractWithTimeout<T>(
       timeoutMs,
     );
   });
-  return Promise.race([read, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+  const race = Promise.race([read, timeout]);
+  race.finally(() => clearTimeout(timer));
+  return race;
 }

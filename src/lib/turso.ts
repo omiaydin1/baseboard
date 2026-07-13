@@ -177,16 +177,10 @@ export async function getLeaderboard(
   const rs = await client.execute({
     sql: `SELECT p.owner,
                  COUNT(*) AS cnt,
-                 COALESCE(
-                   (SELECT MIN(pp.block_number) FROM purchases pp
-                     WHERE pp.buyer = p.owner AND pp.timestamp <= (
-                       SELECT MAX(pp2.timestamp) FROM purchases pp2 WHERE pp2.buyer = p.owner
-                     )
-                   ),
-                   (SELECT MIN(pp3.block_number) FROM purchases pp3 WHERE pp3.buyer = p.owner)
-                 ) AS tie_break_block,
+                 MIN(pp.block_number) AS tie_break_block,
                  b.basename AS base_name
           FROM plots p
+          LEFT JOIN purchases pp ON pp.buyer = p.owner
           LEFT JOIN basenames b ON b.address = p.owner
           WHERE p.owner != '0x0000000000000000000000000000000000000000'
           GROUP BY p.owner

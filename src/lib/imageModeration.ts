@@ -48,14 +48,14 @@ async function ensureTfjsLoaded(): Promise<void> {
     await loadScript(TF_CDN);
     await new Promise<void>((resolve) => {
       const check = (): void => {
-        (window as any).tf ? resolve() : requestAnimationFrame(check);
+        window.tf ? resolve() : requestAnimationFrame(check);
       };
       check();
     });
     await loadScript(NSFW_CDN);
     await new Promise<void>((resolve) => {
       const check = (): void => {
-        (window as any).nsfwjs ? resolve() : requestAnimationFrame(check);
+        window.nsfwjs ? resolve() : requestAnimationFrame(check);
       };
       check();
     });
@@ -67,7 +67,7 @@ async function getNsfwModel(): Promise<any> {
   if (_nsfwModelPromise) return _nsfwModelPromise;
   _nsfwModelPromise = (async () => {
     await ensureTfjsLoaded();
-    const model = await (window as any).nsfwjs.load();
+    const model = await window.nsfwjs.load();
     return model;
   })();
   return _nsfwModelPromise;
@@ -79,7 +79,7 @@ async function ensureTesseractLoaded(): Promise<void> {
     await loadScript(TESS_CDN);
     await new Promise<void>((resolve) => {
       const check = (): void => {
-        (window as any).Tesseract ? resolve() : requestAnimationFrame(check);
+        window.Tesseract ? resolve() : requestAnimationFrame(check);
       };
       check();
     });
@@ -125,7 +125,7 @@ export async function classifyImageNsfw(
 
 async function extractImageText(file: File): Promise<string> {
   await ensureTesseractLoaded();
-  const Tesseract = (window as any).Tesseract;
+  const Tesseract = window.Tesseract;
   const worker = await Tesseract.createWorker("eng");
   try {
     const { data } = await worker.recognize(file);

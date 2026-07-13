@@ -1,12 +1,22 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured, getLeaderboard, getRecentPurchases, getAllPlots } from "@/lib/turso";
 import type { LeaderEntry, PurchaseEvent } from "@/hooks/useBaseBoard";
+import { checkRateLimit } from "@/lib/rateLimit";
 
 /**
  * Returns leaderboard ranking + recent purchase events.
  * Falls back to an empty response when Turso is not configured.
  */
-export async function GET() {
+function clientIp(req: NextRequest): string {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
+  return ip ?? "unknown";
+}
+
+export async function GET(req: NextRequest) {
+  if (!checkRateLimit(clientIp(req))) {
+    return NextResponse.json({ ranking: [], events: [], fromCache: false }, { status: 429 });
+  }
+
   if (!isTursoConfigured()) {
     return NextResponse.json(
       { ranking: [], events: [], fromCache: false } satisfies AllMintedResponse,

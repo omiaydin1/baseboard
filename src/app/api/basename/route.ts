@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, getBasenames } from "@/lib/turso";
+import { checkRateLimit } from "@/lib/rateLimit";
+
+function clientIp(req: NextRequest): string {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip");
+  return ip ?? "unknown";
+}
 
 export async function GET(req: NextRequest) {
+  if (!checkRateLimit(clientIp(req))) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   const address = req.nextUrl.searchParams.get("address");
   const addressesParam = req.nextUrl.searchParams.get("addresses");
 
@@ -42,8 +52,8 @@ export async function GET(req: NextRequest) {
       { status: 400 },
     );
   } catch (err) {
-    const e = err as any;
-    console.error("Basename API error:", e.message ?? e);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("Basename API error:", msg);
     return NextResponse.json({ error: "Resolution failed" }, { status: 500 });
   }
 }
