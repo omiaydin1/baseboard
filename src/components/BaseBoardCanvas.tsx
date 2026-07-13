@@ -77,7 +77,8 @@ function loadBoardCache(): Record<number, Plot> | null {
       };
     }
     return plots;
-  } catch {
+  } catch (err) {
+    console.error("loadBoardCache: failed to load board cache", err);
     return null;
   }
 }
@@ -98,7 +99,9 @@ function saveBoardCache(plots: Record<number, Plot>): void {
       BOARD_CACHE_KEY,
       JSON.stringify({ plots: serializable, timestamp: Date.now() } satisfies CachedBoardWire),
     );
-  } catch { /* localStorage dolu / hata — best-effort */ }
+  } catch (err) {
+    console.error("saveBoardCache: failed to save board cache", err);
+  }
 }
 
 const IPFS_GATEWAYS = [
@@ -106,6 +109,9 @@ const IPFS_GATEWAYS = [
   (cid: string) => `https://nftstorage.link/ipfs/${cid}`,
   (cid: string) => `https://ipfs.io/ipfs/${cid}`,
 ];
+
+// Shared AbortController ref so a new fetchFromTurso cancels any in-flight one.
+const _fetchAbortRef: { current: AbortController | null } = { current: null };
 
 /**
  * High-performance, virtualized HTML5 canvas renderer for the 3162x3162 grid.
@@ -1034,13 +1040,18 @@ export function BaseBoardCanvas() {
       const img = new Image();
       img.crossOrigin = "anonymous";
       let timedOut = false;
+      let handleErrorCalled = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        img.src = "";
+        // Setting src to '' triggers onerror synchronously in some browsers,
+        // so mark handleErrorCalled BEFORE clearing src to prevent double-call.
+        handleErrorCalled = true;
         handleError();
       }, TIMEOUT_MS);
 
       const handleError = () => {
+        if (handleErrorCalled) return;
+        handleErrorCalled = true;
         clearTimeout(timer);
         if (attempt < 3 && (uri.startsWith("ipfs://") || /^[a-zA-Z0-9]{46,}$/.test(uri))) {
           const delays = [5_000, 15_000, 30_000];
@@ -1058,26 +1069,29 @@ export function BaseBoardCanvas() {
       };
 
       img.onload = () => {
+        if (timedOut) return;
         clearTimeout(timer);
-        if (!timedOut) {
-          if (cache.get(key) === img || cache.get(key) === "error") {
-            cache.set(key, img);
-          }
-          imageRetryRef.current.delete(key);
-          dirtyRef.current = true;
+        if (cache.get(key) === img || cache.get(key) === "error") {
+          cache.set(key, img);
         }
+        imageRetryRef.current.delete(key);
+        dirtyRef.current = true;
       };
-      img.onerror = handleError;
+      img.onerror = () => {
+        if (!timedOut) handleError();
+      };
       const gatewayIdx = Math.min(attempt, IPFS_GATEWAYS.length - 1);
       img.src = resolveUri(key, gatewayIdx);
       cache.set(key, img);
       if (cache.size > IMAGE_CACHE_MAX) {
         const visible = visibleImageUrisRef.current;
+        let evicted = 0;
         for (const k of cache.keys()) {
+          if (evicted >= 5) break;
           if (!visible.has(k)) {
             cache.delete(k);
             imageRetryRef.current.delete(k);
-            break;
+            evicted++;
           }
         }
       }
@@ -1138,15 +1152,17 @@ export function BaseBoardCanvas() {
 
       const entry = { thumb: canvas, dominant };
       cache.set(key, entry);
-      // Evict oldest non-visible LOD entry so off-screen images' previews are
+      // Evict non-visible LOD entries so off-screen images' previews are
       // reclaimed while on-screen ones stay hot.  Uses the same visible-URI set
       // as the image cache, keyed by the zone-stripped content address.
       if (cache.size > LOD_CACHE_MAX) {
         const visible = visibleImageUrisRef.current;
+        let evicted = 0;
         for (const k of cache.keys()) {
+          if (evicted >= 5) break;
           if (!visible.has(k)) {
             cache.delete(k);
-            break;
+            evicted++;
           }
         }
       }
@@ -1373,8 +1389,8 @@ export function BaseBoardCanvas() {
         for (const [key, ids] of pendingBatchKeys) {
           batchMembersMap.set(key, ids);
         }
-        // Chain'den gerçek veri geldi — bu ID'ler için optimistic
-        // override'ları temizle (imageUri veya owner değişmiş olabilir).
+        // Real data came from chain — clear optimistic overrides for these IDs
+        // (imageUri or owner may have changed).
         {
           const confirmed: number[] = [];
           const opt = useBoardStore.getState().optimisticPlots;
@@ -1387,6 +1403,7 @@ export function BaseBoardCanvas() {
         }
         // Persist to Turso immediately so the data survives any page refresh
         // without waiting for the GitHub Actions indexer (which runs every 5m).
+        const ac = new AbortController();
         for (const [i, plot] of result.entries()) {
           const id = newPlotIds[i];
           fetch("/api/board/upsert", {
@@ -1399,7 +1416,10 @@ export function BaseBoardCanvas() {
               isForSale: plot.isForSale,
               imageUri: plot.imageUri,
             }),
-          }).catch((e) => console.error("Upsert failed for plot", id, e));
+            signal: ac.signal,
+          }).catch((e) => {
+            if (e.name !== "AbortError") console.error("Upsert failed for plot", id, e);
+          });
         }
         // Persist to localStorage as well for instant re-render fallback.
         const obj: Record<number, Plot> = {};
@@ -1459,7 +1479,7 @@ export function BaseBoardCanvas() {
       const obj: Record<number, Plot> = {};
       map.forEach((v, k) => { obj[k] = v; });
       saveBoardCache(obj);
-      // Preload the updated images
+        // Preload the updated images
       const updatedPlots: Record<number, { imageUri: string }> = {};
       logs.forEach((log) => {
         const args = log.args;
@@ -1468,7 +1488,6 @@ export function BaseBoardCanvas() {
       });
       preloadImages(updatedPlots);
       dirtyRef.current = true;
-      forceTick((t) => t + 1);
     },
   });
 
@@ -1483,7 +1502,7 @@ export function BaseBoardCanvas() {
   const fetchFromTurso = useCallback(async () => {
     if (!cfg.isConfigured) return;
 
-    // Cache'den anında yükle — resimler 15-30sn beklemek yerine hemen preload başlasın
+    // Load from cache instantly so images preload without waiting 15-30s
     const cached = loadBoardCache();
     if (cached && Object.keys(cached).length > 0) {
       const map = plotMapRef.current;
@@ -1493,11 +1512,14 @@ export function BaseBoardCanvas() {
       plotBlockDirtyRef.current = true;
       preloadImages(cached);
       dirtyRef.current = true;
-      forceTick((t) => t + 1);
     }
 
+    const abortRef = _fetchAbortRef;
+    if (abortRef?.current) abortRef.current.abort();
+    const ac = new AbortController();
+    if (abortRef) abortRef.current = ac;
     const since = lastSuccessfulFetchRef.current > 0 ? lastSuccessfulFetchRef.current : undefined;
-    const res = await fetchTursoBoard(undefined, undefined, since);
+    const res = await fetchTursoBoard(undefined, ac.signal, since);
     if (!res?.fromCache) return;
     const map = plotMapRef.current;
     Object.entries(res.plots).forEach(([id, plot]) => {
@@ -1508,17 +1530,17 @@ export function BaseBoardCanvas() {
       }
       map.set(Number(id), plot);
     });
-    // Optimistic override'ları da map'e ekle — watcher başarısız olsa
-    // bile BuyModal'in koyduğu veri kaybolmaz.
+    // Merge optimistic overrides into the map so BuyModal data persists
+    // even if the watcher fails to fetch fresh data.
     const optimistic = useBoardStore.getState().optimisticPlots;
     for (const [id, plot] of Object.entries(optimistic)) {
       map.set(Number(id), plot);
     }
     plotBlockDirtyRef.current = true;
 
-    // Turso'dan gerçek veri gelen optimistic entry'leri temizle.
-    // Owner/imageUri eşleşmesine bakma — Turso'da satır varsa otoriter
-    // odur, optimistic tahmin artık gereksiz (resale/görsel güncelleme).
+    // Clear optimistic entries where Turso has real data.
+    // Don't check owner/imageUri — if Turso has a row, it is authoritative
+    // and the optimistic estimate is no longer needed (resale/image update).
     const confirmed: number[] = [];
     for (const idStr of Object.keys(res.plots)) {
       const id = Number(idStr);
@@ -1538,7 +1560,6 @@ export function BaseBoardCanvas() {
     map.forEach((v, k) => { obj[k] = v; });
     saveBoardCache(obj);
     dirtyRef.current = true;
-    forceTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.isConfigured]);
 
@@ -1569,7 +1590,6 @@ export function BaseBoardCanvas() {
     visibleImageUrisRef.current.clear();
     clearOptimisticPlots();
     dirtyRef.current = true;
-    forceTick((t) => t + 1);
   }, [chainId, clearOptimisticPlots]);
 
   // Turso fetch on mount.

@@ -156,7 +156,7 @@ export const useBoardStore = create<BoardUIState>((set) => ({
     const id = ++_toastId;
     set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));
     if (typeof window !== "undefined") {
-      window.setTimeout(() => {
+      setTimeout(() => {
         set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
       }, 4500);
     }

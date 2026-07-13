@@ -30,11 +30,13 @@ export const metadata: Metadata = {
     url: APP_URL,
     siteName: "BaseBoard",
     type: "website",
+    images: [{ url: "/og.png", width: 1200, height: 630 }],
   },
   twitter: {
     card: "summary_large_image",
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
+    images: [{ url: "/og.png", width: 1200, height: 630 }],
   },
   // Icons are served via App Router file-based metadata
   // (app/favicon.ico, app/icon.png, app/apple-icon.png) — no manual `icons`
@@ -49,8 +51,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  maximumScale: 5,
+  themeColor: "#0052FF",
 };
 
 export default function RootLayout({

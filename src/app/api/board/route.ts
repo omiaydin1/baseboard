@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured, getPlotBatch, getAllPlots } from "@/lib/turso";
+import { TOTAL_PLOTS } from "@/lib/constants";
 import { checkRateLimit } from "@/lib/rateLimit";
 
 /**
@@ -56,7 +57,8 @@ export async function GET(req: NextRequest) {
     if (idsParam === "all") {
       // `sinceParam` client'tan milisaniye olarak gelir; Turso'daki
       // `updated_at` saniye cinsinden kaydedilir, bu yüzden bölüyoruz.
-      const since = sinceParam ? Math.floor(Number(sinceParam) / 1000) : undefined;
+      const sinceNum = Number(sinceParam);
+      const since = sinceParam && Number.isFinite(sinceNum) ? Math.floor(sinceNum / 1000) : undefined;
       rows = await getAllPlots(client, since);
     } else {
       if (!idsParam) {
@@ -70,10 +72,13 @@ export async function GET(req: NextRequest) {
         .map((s) => s.trim())
         .filter((s) => s.length > 0)
         .map(Number)
-        .filter((n) => !isNaN(n) && n >= 0);
+        .filter((n) => Number.isFinite(n) && n >= 0 && n < TOTAL_PLOTS);
 
       if (ids.length === 0) {
         return NextResponse.json({ plots: {}, fromCache: false } satisfies BoardResponse);
+      }
+      if (ids.length > 5000) {
+        return NextResponse.json({ error: "Too many ids" }, { status: 400 });
       }
       rows = await getPlotBatch(client, ids);
     }

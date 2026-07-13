@@ -1,0 +1,4 @@
+# BaseBoard Security Contact
+Contact: mailto:security@baseboard.live
+Preferred-Languages: en, tr
+Canonical: https://baseboard.live/.well-known/security.txt

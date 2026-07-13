@@ -46,14 +46,18 @@ function loadPersistedSold(chainId: number): number | null {
       const n = Number(raw);
       if (Number.isFinite(n) && n >= 0) return n;
     }
-  } catch { /* localStorage unavailable */ }
+  } catch (err) {
+    console.error("loadPersistedSold: localStorage error", err);
+  }
   return null;
 }
 
 function savePersistedSold(chainId: number, val: number): void {
   try {
     localStorage.setItem(`${STORAGE_PREFIX}:${chainId}`, String(val));
-  } catch { /* localStorage unavailable */ }
+  } catch (err) {
+    console.error("savePersistedSold: localStorage error", err);
+  }
 }
 
 export function useBoardStats() {
@@ -532,7 +536,8 @@ function loadPersistedScan(contract?: string): PersistedScan | null {
       return null;
     }
     return parsed;
-  } catch {
+  } catch (err) {
+    console.error("loadPersistedScan: failed to load scan", err);
     return null;
   }
 }
@@ -543,8 +548,8 @@ function savePersistedScan(contract: string | undefined, snap: PersistedScan) {
   if (!key) return;
   try {
     window.localStorage.setItem(key, JSON.stringify({ ...snap, storedAt: Date.now() }));
-  } catch {
-    /* quota exceeded / serialization error — caching is best-effort, skip */
+  } catch (err) {
+    console.error("savePersistedScan: localStorage error", err);
   }
 }
 
@@ -561,7 +566,8 @@ export function useLeaderboardAge(): string {
     if (elapsed < 60_000) return "Just now";
     if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
     return `${Math.floor(elapsed / 3_600_000)}h ago`;
-  } catch {
+  } catch (err) {
+    console.error("useLeaderboardAge: error", err);
     return "";
   }
 }
@@ -602,6 +608,7 @@ export function useAllMintedPlots(): AllMintedData {
   }, [cfg.isConfigured]);
 
   const runningRef = useRef(false);
+  const scanGenRef = useRef(0);
 
   // Persisted, incremental discovery state scoped to the active contract. Each
   // trigger only reads NEW logs (lastScannedBlock+1 .. latest) and merges them
@@ -661,8 +668,12 @@ export function useAllMintedPlots(): AllMintedData {
     if (!cfg.isConfigured) return;
     if (loadPersistedScan(cfg.contract)) return; // already have local cache
     let cancelled = false;
+    const fetchGen = scanGenRef.current;
     fetchTursoLeaderboard().then((res) => {
       if (cancelled || !res?.fromCache) return;
+      // Only apply Turso data if no RPC scan has completed since we started
+      // (the RPC scan bumps loading to true then false with authoritative data).
+      if (scanGenRef.current !== fetchGen) return;
       const counts: Array<[string, number]> = res.ranking.map(
         (e) => [e.owner.toLowerCase(), e.count] as [string, number],
       );
@@ -705,6 +716,7 @@ export function useAllMintedPlots(): AllMintedData {
       return;
     }
     let cancelled = false;
+    const thisGen = ++scanGenRef.current;
     if (runningRef.current) return;
     runningRef.current = true;
     setRaw((d) => ({ ...d, loading: true }));
@@ -728,10 +740,14 @@ export function useAllMintedPlots(): AllMintedData {
           st.mintedIds = new Set();
         }
 
-        // Incremental: first pass scans from the deploy block; later passes only
-        // scan the blocks added since the last successfully-scanned one.
+        // Incremental: first pass scans from the deploy block; later passes
+        // scan from REORG_WINDOW blocks before the last scanned position so
+        // re-orged/reverted events are re-discovered and corrected.
+        const REORG_WINDOW = 20;
         const fromBlock =
-          st.lastScannedBlock > 0 ? st.lastScannedBlock + 1 : cfg.deployBlock;
+          st.lastScannedBlock > 0
+            ? Math.max(cfg.deployBlock, st.lastScannedBlock - REORG_WINDOW + 1)
+            : cfg.deployBlock;
 
         let scanIncomplete = false;
         const LOG_CHUNK = 9_500;
@@ -764,9 +780,11 @@ export function useAllMintedPlots(): AllMintedData {
                 });
               });
               ok = true;
-            } catch {
-              if (attempt < 2)
+            } catch (err) {
+              if (attempt < 2) {
+                console.warn(`getContractEvents chunk ${start}-${end} failed, retrying`, err);
                 await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+              }
             }
           }
           // A range that failed every retry leaves a hole; flag it rather than
@@ -800,8 +818,8 @@ export function useAllMintedPlots(): AllMintedData {
               if (owner === ZERO_ADDRESS) return;
               currentCounts.set(owner, (currentCounts.get(owner) ?? 0) + 1);
             });
-          } catch {
-            /* keep going with whatever loaded */
+          } catch (err) {
+            console.error("getPlotsBatch chunk failed", err);
           }
         }
 
@@ -811,7 +829,7 @@ export function useAllMintedPlots(): AllMintedData {
 
         // Batch-resolve basenames for all known owners via server-side API.
         const ownerAddresses = Array.from(currentCounts.keys()) as `0x${string}`[];
-        resolveBaseNamesBatch(ownerAddresses).catch(() => {});
+        resolveBaseNamesBatch(ownerAddresses).catch((err) => console.error("resolveBaseNamesBatch failed", err));
 
         // Persist the snapshot so the next reload hydrates instantly and the
         // scan resumes from `lastScannedBlock` rather than the deploy block.
@@ -840,16 +858,21 @@ export function useAllMintedPlots(): AllMintedData {
             counts,
             scanIncomplete,
           });
-      } catch {
+      } catch (err) {
+        console.error("scan failed", err);
         if (!cancelled) setRaw((d) => ({ ...d, loading: false }));
       } finally {
-        runningRef.current = false;
+        // Only release when thisGen is still the current generation
+        // (avoids unmount/remount race where old scan releases the lock
+        //  allowing a third concurrent scan to start).
+        if (scanGenRef.current === thisGen) runningRef.current = false;
       }
     })();
 
     return () => {
       cancelled = true;
-      runningRef.current = false;
+      // Do NOT reset runningRef here — the old scan may still be in-flight
+      // and its finally block will check scanGenRef to decide.
     };
   }, [
     cfg.isConfigured,

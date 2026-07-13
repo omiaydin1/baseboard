@@ -42,9 +42,13 @@ export interface TursoStatsResponse {
 async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T | null> {
   try {
     const res = await fetch(url, { signal });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(`fetchJson ${url} returned ${res.status}`);
+      return null;
+    }
     return (await res.json()) as T;
-  } catch {
+  } catch (err) {
+    console.error(`fetchJson ${url} failed:`, err);
     return null;
   }
 }

@@ -14,12 +14,22 @@ function loadConfig(): TursoConfig | null {
 
 let _client: ReturnType<typeof createClient> | null = null;
 let _schemaEnsured = false;
+let _clientUrl = "";
+let _clientToken = "";
+
+function safeNumber(val: unknown, fallback = 0): number {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 export async function getTursoClient(): Promise<ReturnType<typeof createClient> | null> {
-  if (!_client) {
-    const cfg = loadConfig();
-    if (!cfg) return null;
+  const cfg = loadConfig();
+  if (!cfg) return null;
+  if (!_client || _clientUrl !== cfg.url || _clientToken !== cfg.authToken) {
     _client = createClient({ url: cfg.url, authToken: cfg.authToken });
+    _clientUrl = cfg.url;
+    _clientToken = cfg.authToken;
+    _schemaEnsured = false;
   }
   if (!_schemaEnsured) {
     await ensureSchema(_client);
@@ -82,14 +92,26 @@ const PLOTS_FOR_SALE_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_plots_for_sale ON plots(is_for_sale) WHERE is_for_sale = 1
 `;
 
+const PURCHASES_BUYER_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_purchases_buyer ON purchases(buyer)
+`;
+
+const PLOTS_UPDATED_AT_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_plots_updated_at ON plots(updated_at)
+`;
+
 export async function ensureSchema(client: ReturnType<typeof createClient>): Promise<void> {
-  await client.execute(PLOTS_TABLE);
-  await client.execute(PURCHASES_TABLE);
-  await client.execute(BASENAMES_TABLE);
-  await client.execute(INDEXER_STATE_TABLE);
-  await client.execute(PURCHASES_INDEX);
-  await client.execute(PLOTS_OWNER_INDEX);
-  await client.execute(PLOTS_FOR_SALE_INDEX);
+  await client.batch([
+    PLOTS_TABLE,
+    PURCHASES_TABLE,
+    BASENAMES_TABLE,
+    INDEXER_STATE_TABLE,
+    PURCHASES_INDEX,
+    PLOTS_OWNER_INDEX,
+    PLOTS_FOR_SALE_INDEX,
+    PURCHASES_BUYER_INDEX,
+    PLOTS_UPDATED_AT_INDEX,
+  ], "write");
 }
 
 export async function getLastScannedBlock(client: ReturnType<typeof createClient>): Promise<number> {
@@ -98,7 +120,7 @@ export async function getLastScannedBlock(client: ReturnType<typeof createClient
     args: ["last_scanned_block"],
   });
   if (rs.rows.length === 0) return 0;
-  return Number(rs.rows[0].value);
+  return safeNumber(rs.rows[0].value);
 }
 
 export async function setLastScannedBlock(
@@ -176,7 +198,7 @@ export async function getLeaderboard(
 ): Promise<Array<{ owner: string; count: number; tieBreakBlock: number; rank: number; baseName: string | null }>> {
   const rs = await client.execute({
     sql: `SELECT p.owner,
-                 COUNT(*) AS cnt,
+                 COUNT(DISTINCT p.plot_id) AS cnt,
                  MIN(pp.block_number) AS tie_break_block,
                  b.basename AS base_name
           FROM plots p
@@ -190,8 +212,8 @@ export async function getLeaderboard(
   });
   return rs.rows.map((row, i) => ({
     owner: row.owner as string,
-    count: Number(row.cnt),
-    tieBreakBlock: Number(row.tie_break_block ?? Number.MAX_SAFE_INTEGER),
+    count: safeNumber(row.cnt),
+    tieBreakBlock: safeNumber(row.tie_break_block, Number.MAX_SAFE_INTEGER),
     rank: i + 1,
     baseName: (row.base_name as string) ?? null,
   }));
@@ -219,7 +241,7 @@ export async function getTotalPlotsSold(
   const rs = await client.execute(
     "SELECT COUNT(*) AS cnt FROM plots WHERE owner != '0x0000000000000000000000000000000000000000'",
   );
-  return Number(rs.rows[0]?.cnt ?? 0);
+  return safeNumber(rs.rows[0]?.cnt);
 }
 
 export async function getPlotBatch(
@@ -227,19 +249,30 @@ export async function getPlotBatch(
   plotIds: number[],
 ): Promise<Array<{ plotId: number; owner: string; price: string; isForSale: boolean; imageUri: string }>> {
   if (plotIds.length === 0) return [];
-  const placeholders = plotIds.map(() => "?").join(",");
-  const rs = await client.execute({
-    sql: `SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE plot_id IN (${placeholders})`,
-    args: plotIds.map(String),
-  });
-  return rs.rows.map((row) => ({
-    plotId: Number(row.plot_id),
-    owner: row.owner as string,
-    price: row.price as string,
-    isForSale: Number(row.is_for_sale) === 1,
-    imageUri: row.image_uri as string,
-  }));
+  // SQLite has a limit of ~999 parameters — chunk to stay safe.
+  const CHUNK_SIZE = 900;
+  const results: Array<{ plotId: number; owner: string; price: string; isForSale: boolean; imageUri: string }> = [];
+  for (let i = 0; i < plotIds.length; i += CHUNK_SIZE) {
+    const chunk = plotIds.slice(i, i + CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rs = await client.execute({
+      sql: `SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE plot_id IN (${placeholders})`,
+      args: chunk.map(String),
+    });
+    for (const row of rs.rows) {
+      results.push({
+        plotId: Number(row.plot_id),
+        owner: row.owner as string,
+        price: row.price as string,
+        isForSale: Number(row.is_for_sale) === 1,
+        imageUri: row.image_uri as string,
+      });
+    }
+  }
+  return results;
 }
+
+const GET_ALL_PLOTS_LIMIT = 1000;
 
 export async function getAllPlots(
   client: ReturnType<typeof createClient>,
@@ -248,11 +281,11 @@ export async function getAllPlots(
   let sql: string;
   let args: (string | number)[];
   if (since) {
-    sql = "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000' AND updated_at > ?";
-    args = [since];
+    sql = "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000' AND updated_at >= ? LIMIT ?";
+    args = [since, GET_ALL_PLOTS_LIMIT];
   } else {
-    sql = "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000'";
-    args = [];
+    sql = "SELECT plot_id, owner, price, is_for_sale, image_uri FROM plots WHERE owner != '0x0000000000000000000000000000000000000000' LIMIT ?";
+    args = [GET_ALL_PLOTS_LIMIT];
   }
   const rs = await client.execute({ sql, args });
   return rs.rows.map((row) => ({

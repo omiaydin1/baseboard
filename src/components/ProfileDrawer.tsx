@@ -222,8 +222,8 @@ export function ProfileDrawer() {
             }
           });
         }
-      } catch {
-        /* ignore */
+      } catch (err) {
+        console.error("ProfileDrawer detail fetch failed", err);
       }
     })();
     return () => {

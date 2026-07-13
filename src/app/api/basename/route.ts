@@ -37,7 +37,8 @@ export async function GET(req: NextRequest) {
       const rawAddresses = addressesParam
         .split(",")
         .map((a) => a.trim())
-        .filter((a) => a.startsWith("0x"));
+        .filter((a) => a.startsWith("0x") && a.length === 42)
+        .slice(0, 100); // limit to prevent DoS
       const cached = await getBasenames(turso, rawAddresses);
       const names: Record<string, string | null> = {};
       for (const a of rawAddresses) {

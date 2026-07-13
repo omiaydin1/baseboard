@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
       count: e.count,
       tieBreakBlock: e.tieBreakBlock,
       rank: e.rank,
-      baseName: e.baseName as string | null,
+      baseName: e.baseName ?? null,
     }));
 
     const events: PurchaseEvent[] = rawEvents.map((e) => ({

@@ -14,10 +14,6 @@ interface UpsertBody {
   imageUri: string;
 }
 
-function isHex(s: string): boolean {
-  return /^[a-fA-F0-9]+$/.test(s);
-}
-
 const UPSERT_API_KEY = process.env.UPSERT_API_KEY ?? "";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "";
 
@@ -75,8 +71,14 @@ export async function POST(req: NextRequest) {
     }
 
     // price: optional, must be valid numeric string if provided
-    if (body.price != null && body.price !== "" && !/^\d+(\.\d+)?$/.test(body.price)) {
-      return NextResponse.json({ ok: false, error: "Invalid price" }, { status: 400 });
+    if (body.price != null && body.price !== "") {
+      if (!/^\d+(\.\d+)?$/.test(body.price)) {
+        return NextResponse.json({ ok: false, error: "Invalid price" }, { status: 400 });
+      }
+      // Reject unreasonably large prices (> 1M ETH)
+      if (Number(body.price) > 1_000_000) {
+        return NextResponse.json({ ok: false, error: "Price too large" }, { status: 400 });
+      }
     }
 
     // isForSale: optional boolean

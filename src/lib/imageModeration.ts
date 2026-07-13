@@ -18,11 +18,11 @@ import { RESTRICTED_KEYWORDS } from "./image";
 // ---------------------------------------------------------------------------
 
 const TF_CDN =
-  "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js";
+  "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js";
 const NSFW_CDN =
-  "https://cdn.jsdelivr.net/npm/nsfwjs@latest/dist/nsfwjs.min.js";
+  "https://cdn.jsdelivr.net/npm/nsfwjs@4.2.0/dist/nsfwjs.min.js";
 const TESS_CDN =
-  "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+  "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
 
 let _loadPromise: Promise<void> | null = null;
 let _nsfwModelPromise: Promise<any> | null = null;

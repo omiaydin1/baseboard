@@ -73,7 +73,11 @@ export const ZERO_ADDRESS =
  */
 export const BASEBOARD_DEPLOY_BLOCK = DEV_LOCAL
   ? 0
-  : Number(process.env.NEXT_PUBLIC_BASEBOARD_DEPLOY_BLOCK || "47083347");
+  : (() => {
+      const raw = process.env.NEXT_PUBLIC_BASEBOARD_DEPLOY_BLOCK;
+      const n = Number(raw || "47083347");
+      return Number.isFinite(n) && n >= 0 ? n : 47083347;
+    })();
 
 /** Whether a real contract address has been configured. */
 export const IS_CONTRACT_CONFIGURED =
