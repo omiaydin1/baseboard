@@ -48,3 +48,6 @@ next-env.d.ts
 
 vercel-env.txt
 NOTLAR.txt
+
+# dev artifacts
+dev-server.log

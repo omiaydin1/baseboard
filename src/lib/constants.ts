@@ -35,6 +35,30 @@ export const PLOT_PRICE_ETH = "0.00005";
 /** Flat primary price per plot, in wei. */
 export const PLOT_PRICE_WEI = parseEther(PLOT_PRICE_ETH);
 
+/**
+ * Community-event creation pricing: 1/10 of the normal flat plot price.
+ * The creator sends this per-pixel amount directly to the treasury and the
+ * server verifies the transfer (via RPC) before publishing the event.
+ */
+export const EVENT_PRICE_DIVISOR = 10n;
+export const EVENT_PRICE_PER_PIXEL_WEI = PLOT_PRICE_WEI / EVENT_PRICE_DIVISOR; // 0.000005 ETH
+export const EVENT_PRICE_PER_PIXEL_ETH = "0.000005";
+
+/**
+ * Maximum area (pixels) of a community-event region. Any rectangle shape is
+ * allowed (1×1 up to 3162×3162), as long as the product stays at or below
+ * this cap.
+ */
+export const MAX_EVENT_AREA = 200_000;
+
+/**
+ * Size budgets for the event image stored in Turso (a data URI). On-chain
+ * storage caps don't apply here — Turso rows are cheap — so we can keep a
+ * much larger, crisper image than plot artwork.
+ */
+export const EVENT_IMAGE_MAX_BYTES = 1_000_000; // hard cap (data URI chars)
+export const EVENT_IMAGE_TARGET_BYTES = 900_000; // compression target
+
 /** Treasury that receives 100% of primary purchase proceeds. */
 export const TREASURY_ADDRESS =
   "0xce835359202acbB4a10d9a2f97a72E6d0B76f1e2" as const;

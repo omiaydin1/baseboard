@@ -2,6 +2,14 @@ import { create } from "zustand";
 import type { BBox } from "@/lib/coords";
 import type { Plot } from "@/lib/types";
 
+/** A region selected on the board for the event-creation flow. */
+export interface EventDraft {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
 export type ToastKind = "success" | "error" | "info";
 
 export interface Toast {
@@ -20,6 +28,24 @@ interface BoardUIState {
   leaderboardOpen: boolean;
   setLeaderboardOpen: (open: boolean) => void;
   toggleLeaderboard: () => void;
+
+  /** Event drawer open/closed (lists reveal events; same slide-in mechanism). */
+  eventDrawerOpen: boolean;
+  setEventDrawerOpen: (open: boolean) => void;
+  toggleEventDrawer: () => void;
+
+  /**
+   * Event-creation flow: when true the board's selection tools capture a
+   * region (marquee or click) as an event draft instead of a buy selection.
+   * The drawer closes while the user frames their area; the selection
+   * reopens it in "create" view with the coordinates pre-filled.
+   */
+  eventCreateMode: boolean;
+  setEventCreateMode: (on: boolean) => void;
+
+  /** Selected event region from the board (created via the create flow). */
+  eventDraft: EventDraft | null;
+  setEventDraft: (draft: EventDraft | null) => void;
 
   /**
    * Whether the purchase-density (heatmap) overlay is shown. When false the
@@ -89,15 +115,41 @@ let _toastId = 0;
 
 export const useBoardStore = create<BoardUIState>((set) => ({
   profileOpen: false,
-  setProfileOpen: (open) => set({ profileOpen: open, leaderboardOpen: false }),
+  setProfileOpen: (open) =>
+    set({ profileOpen: open, leaderboardOpen: false, eventDrawerOpen: false }),
   toggleProfile: () =>
-    set((s) => ({ profileOpen: !s.profileOpen, leaderboardOpen: false })),
+    set((s) => ({
+      profileOpen: !s.profileOpen,
+      leaderboardOpen: false,
+      eventDrawerOpen: false,
+    })),
 
   leaderboardOpen: false,
   setLeaderboardOpen: (open) =>
-    set({ leaderboardOpen: open, profileOpen: false }),
+    set({ leaderboardOpen: open, profileOpen: false, eventDrawerOpen: false }),
   toggleLeaderboard: () =>
-    set((s) => ({ leaderboardOpen: !s.leaderboardOpen, profileOpen: false })),
+    set((s) => ({
+      leaderboardOpen: !s.leaderboardOpen,
+      profileOpen: false,
+      eventDrawerOpen: false,
+    })),
+
+  eventDrawerOpen: false,
+  setEventDrawerOpen: (open) =>
+    set({ eventDrawerOpen: open, profileOpen: false, leaderboardOpen: false }),
+  toggleEventDrawer: () =>
+    set((s) => ({
+      eventDrawerOpen: !s.eventDrawerOpen,
+      profileOpen: false,
+      leaderboardOpen: false,
+    })),
+
+  eventCreateMode: false,
+  setEventCreateMode: (on) =>
+    set((s) => (on ? { eventCreateMode: true, basket: [] } : { eventCreateMode: false })),
+
+  eventDraft: null,
+  setEventDraft: (draft) => set({ eventDraft: draft }),
 
   densityEnabled: false,
   setDensityEnabled: (on) => set({ densityEnabled: on }),

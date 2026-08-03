@@ -96,6 +96,26 @@ const PURCHASES_BUYER_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_purchases_buyer ON purchases(buyer)
 `;
 
+const EVENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  x1 INTEGER NOT NULL,
+  y1 INTEGER NOT NULL,
+  x2 INTEGER NOT NULL,
+  y2 INTEGER NOT NULL,
+  image TEXT NOT NULL,
+  link TEXT NOT NULL DEFAULT '',
+  creator TEXT NOT NULL,
+  tx_hash TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+)
+`;
+
+const EVENTS_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC)
+`;
+
 const PLOTS_UPDATED_AT_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_plots_updated_at ON plots(updated_at)
 `;
@@ -106,10 +126,12 @@ export async function ensureSchema(client: ReturnType<typeof createClient>): Pro
     PURCHASES_TABLE,
     BASENAMES_TABLE,
     INDEXER_STATE_TABLE,
+    EVENTS_TABLE,
     PURCHASES_INDEX,
     PLOTS_OWNER_INDEX,
     PLOTS_FOR_SALE_INDEX,
     PURCHASES_BUYER_INDEX,
+    EVENTS_INDEX,
     PLOTS_UPDATED_AT_INDEX,
   ], "write");
 }
@@ -161,6 +183,133 @@ export async function insertPurchase(
     sql: "INSERT INTO purchases (block_number, tx_hash, buyer, count, timestamp) VALUES (?, ?, ?, ?, ?)",
     args: [blockNumber, txHash, buyer.toLowerCase(), count, timestamp],
   });
+}
+
+export interface EventRow {
+  id: number;
+  title: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  image: string;
+  link: string;
+  creator: string;
+  txHash: string;
+  createdAt: number;
+  /** Owned plots currently inside the region (progress for the creator). */
+  soldCount: number;
+}
+
+function mapEventRow(row: Record<string, unknown>): EventRow {
+  return {
+    id: safeNumber(row.id),
+    title: String(row.title ?? ""),
+    x1: safeNumber(row.x1),
+    y1: safeNumber(row.y1),
+    x2: safeNumber(row.x2),
+    y2: safeNumber(row.y2),
+    image: String(row.image ?? ""),
+    link: String(row.link ?? ""),
+    creator: String(row.creator ?? ""),
+    txHash: String(row.tx_hash ?? ""),
+    createdAt: safeNumber(row.created_at),
+    soldCount: safeNumber(row.sold_count),
+  };
+}
+
+export async function insertEvent(
+  client: ReturnType<typeof createClient>,
+  e: Omit<EventRow, "id" | "createdAt" | "soldCount">,
+  createdAt: number,
+): Promise<number> {
+  const rs = await client.execute({
+    sql: `INSERT INTO events (title, x1, y1, x2, y2, image, link, creator, tx_hash, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      e.title,
+      e.x1,
+      e.y1,
+      e.x2,
+      e.y2,
+      e.image,
+      e.link,
+      e.creator.toLowerCase(),
+      e.txHash,
+      createdAt,
+    ],
+  });
+  return Number(rs.lastInsertRowid ?? 0);
+}
+
+export async function getEvents(
+  client: ReturnType<typeof createClient>,
+): Promise<EventRow[]> {
+  const rs = await client.execute(
+    `SELECT e.id, e.title, e.x1, e.y1, e.x2, e.y2, e.image, e.link, e.creator,
+            e.tx_hash, e.created_at,
+            (SELECT COUNT(*) FROM plots p
+              WHERE p.owner != '0x0000000000000000000000000000000000000000'
+                AND (p.plot_id % 3162) BETWEEN e.x1 AND e.x2
+                AND (p.plot_id / 3162) BETWEEN e.y1 AND e.y2) AS sold_count
+     FROM events e ORDER BY e.id ASC`,
+  );
+  return rs.rows.map(mapEventRow);
+}
+
+export async function getEventById(
+  client: ReturnType<typeof createClient>,
+  id: number,
+): Promise<EventRow | null> {
+  const rs = await client.execute({
+    sql: "SELECT id, title, x1, y1, x2, y2, image, link, creator, tx_hash, created_at FROM events WHERE id = ?",
+    args: [id],
+  });
+  return rs.rows.length > 0 ? mapEventRow(rs.rows[0]) : null;
+}
+
+export async function updateEventLink(
+  client: ReturnType<typeof createClient>,
+  id: number,
+  link: string,
+): Promise<void> {
+  await client.execute({
+    sql: "UPDATE events SET link = ? WHERE id = ?",
+    args: [link, id],
+  });
+}
+
+/** True when any existing event region intersects the given box. */
+export async function hasEventOverlap(
+  client: ReturnType<typeof createClient>,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): Promise<boolean> {
+  const rs = await client.execute({
+    sql: "SELECT id FROM events WHERE x1 <= ? AND x2 >= ? AND y1 <= ? AND y2 >= ? LIMIT 1",
+    args: [x2, x1, y2, y1],
+  });
+  return rs.rows.length > 0;
+}
+
+/** Plot ids of currently OWNED plots whose (x, y) falls inside the box. */
+export async function getPlotIdsInBox(
+  client: ReturnType<typeof createClient>,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): Promise<number[]> {
+  const rs = await client.execute({
+    sql: `SELECT plot_id FROM plots
+          WHERE owner != '0x0000000000000000000000000000000000000000'
+            AND (plot_id % 3162) BETWEEN ? AND ?
+            AND (plot_id / 3162) BETWEEN ? AND ?`,
+    args: [x1, x2, y1, y2],
+  });
+  return rs.rows.map((r) => safeNumber(r.plot_id));
 }
 
 export async function upsertBasename(

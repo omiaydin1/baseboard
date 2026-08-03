@@ -7,6 +7,7 @@ import { Spinner } from "./Spinner";
 import { useBoardStore } from "@/store/useBoardStore";
 import { shortAddress, xyFromPlotId } from "@/lib/coords";
 import { parseLink, parseZone, stripZone } from "@/lib/image";
+import { getEventForCell, useEvents } from "@/lib/eventReveals";
 import { ZERO_ADDRESS } from "@/lib/constants";
 import type { Plot } from "@/lib/types";
 import { fetchTursoBoard } from "@/lib/tursoClient";
@@ -16,6 +17,8 @@ export function PlotModal() {
   const closePlot = useBoardStore((s) => s.closePlot);
   const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
   const { address } = useAccount();
+  // Keep the event-region resolution in sync with the loaded event list.
+  useEvents();
 
   const [copied, setCopied] = useState(false);
 
@@ -72,11 +75,17 @@ export function PlotModal() {
   const open = activePlotId != null;
   const coords = activePlotId != null ? xyFromPlotId(activePlotId) : null;
 
+  // Event regions: bought pixels show the event's own link automatically and
+  // never display third-party artwork — on the board only the reveal colour
+  // appears, and here the buyer's wallet + the event link are shown instead.
+  const eventRegion =
+    effectiveOwned && coords ? getEventForCell(coords.x, coords.y) : null;
+
   // The plot's own image/link
   const ownImage = effectivePlot?.imageUri ? stripZone(effectivePlot.imageUri) : null;
   const ownLink = effectivePlot?.imageUri ? parseLink(effectivePlot.imageUri) : null;
-  const displayImage = ownImage;
-  const plotLink = ownLink;
+  const displayImage = eventRegion ? null : ownImage;
+  const plotLink = eventRegion?.link ?? ownLink;
 
   const isOwner =
     !!effectivePlot &&
@@ -161,7 +170,9 @@ export function PlotModal() {
                 </div>
                 {plotLink && (
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-slate-500">Link</dt>
+                    <dt className="text-slate-500">
+                      {eventRegion ? "Event link" : "Link"}
+                    </dt>
                     <dd className="min-w-0 text-right">
                       <a
                         href={plotLink}

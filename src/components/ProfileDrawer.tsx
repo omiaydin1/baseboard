@@ -25,6 +25,8 @@ import {
   type Zone,
 } from "@/lib/image";
 import { classifyImageNsfw, screenImageText } from "@/lib/imageModeration";
+import { getEventForCell, loadEvents, useEvents, eventPlotCount } from "@/lib/eventReveals";
+import type { EventReveal } from "@/lib/event";
 import type { Plot } from "@/lib/types";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
@@ -147,10 +149,31 @@ export function ProfileDrawer() {
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
   const { ids, isLoading } = usePlotsByOwner(address);
+  // Keep event-region locks in sync when created events load/change.
+  const events = useEvents();
+
+  // Created events are filtered by creator below; refetch on open so the
+  // sold/remaining progress is fresh.
+  useEffect(() => {
+    if (profileOpen) void loadEvents(true);
+  }, [profileOpen]);
 
   const [details, setDetails] = useState<Record<number, Plot>>({});
   const [multiMode, setMultiMode] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
+
+  // Events created by the connected wallet (shown with sell-through progress).
+  const myEvents = useMemo(
+    () =>
+      address
+        ? events.filter(
+            (e) =>
+              e.creator &&
+              e.creator.toLowerCase() === address.toLowerCase(),
+          )
+        : [],
+    [events, address],
+  );
 
   const toggleSelected = (id: number) =>
     setSelected((s) => (s.includes(id) ? s.filter((i) => i !== id) : [...s, id]));
@@ -304,17 +327,20 @@ export function ProfileDrawer() {
               No BaseBoard contract is configured on {cfg.name}. Deploy
               BaseBoard.sol on this network to manage your pixels here.
             </p>
-          ) : isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <Spinner size={16} /> Loading your pixels…
-            </div>
-          ) : ids.length === 0 ? (
-            <div className="mt-10 text-center text-sm text-slate-500">
-              You don&apos;t own any pixels yet. Close this panel and buy some on
-              the board!
-            </div>
           ) : (
-            <div className="space-y-3">
+            <>
+              {myEvents.length > 0 && <MyEventsSection events={myEvents} />}
+              {isLoading ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <Spinner size={16} /> Loading your pixels…
+                </div>
+              ) : ids.length === 0 ? (
+                <div className="mt-10 text-center text-sm text-slate-500">
+                  You don&apos;t own any pixels yet. Close this panel and buy
+                  some on the board!
+                </div>
+              ) : (
+                <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-600">
                   {ids.length} pixel{ids.length === 1 ? "" : "s"} owned
@@ -432,7 +458,9 @@ export function ProfileDrawer() {
                     }
                     return rows;
                   })()}
-            </div>
+              </div>
+              )}
+            </>
           )}
         </div>
 
@@ -452,6 +480,94 @@ export function ProfileDrawer() {
 
 type Action = "none" | "image";
 
+/** Events created by the connected wallet, with sell-through progress. */
+function MyEventsSection({ events }: { events: EventReveal[] }) {
+  const setFocusBounds = useBoardStore((s) => s.setFocusBounds);
+  const setProfileOpen = useBoardStore((s) => s.setProfileOpen);
+  const pushToast = useBoardStore((s) => s.pushToast);
+
+  const shareEvent = async (id: string) => {
+    const url = `${window.location.origin}${window.location.pathname}?event=${id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      pushToast("success", "Event link copied — share it anywhere!");
+    } catch {
+      pushToast("error", "Could not copy the link");
+    }
+  };
+
+  return (
+    <div className="mb-4 space-y-3">
+      <p className="text-sm font-semibold text-slate-600">
+        {events.length} event{events.length === 1 ? "" : "s"} created
+      </p>
+      {events.map((e) => {
+        const total = eventPlotCount(e);
+        const sold = Math.min(Math.max(e.soldCount ?? 0, 0), total);
+        const remaining = Math.max(0, total - sold);
+        const pct = total > 0 ? Math.round((sold / total) * 100) : 0;
+        return (
+          <div
+            key={e.id}
+            className="rounded-xl border-2 border-blue-100 p-3"
+          >
+            <div className="flex items-start gap-3">
+              <img
+                src={e.imagePath}
+                alt={e.title}
+                className="h-14 w-14 shrink-0 rounded-lg border border-blue-100 object-cover"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-bold text-base-blue">
+                  {e.title}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {sold.toLocaleString()} / {total.toLocaleString()} pixels
+                  sold · {remaining.toLocaleString()} left
+                </p>
+                <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-blue-100">
+                  <div
+                    className="h-full rounded-full bg-base-blue transition-all"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-xs font-semibold text-base-blue">
+                  {pct}% complete
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    setFocusBounds({
+                      x1: e.x1,
+                      y1: e.y1,
+                      x2: e.x2,
+                      y2: e.y2,
+                    });
+                  }}
+                  className="rounded-lg border-2 border-base-blue px-2.5 py-1 text-xs font-bold text-base-blue transition hover:bg-blue-50"
+                >
+                  Show on Board
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void shareEvent(e.id)}
+                  title="Copy share link"
+                  className="rounded-lg border-2 border-base-blue px-2.5 py-1 text-xs font-bold text-base-blue transition hover:bg-blue-50"
+                >
+                  Share
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function OwnedPlotRow({
   plotId,
   plot,
@@ -466,6 +582,7 @@ function OwnedPlotRow({
   onToggle: () => void;
 }) {
   const { x, y } = xyFromPlotId(plotId);
+  const eventRegion = getEventForCell(x, y);
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const cfg = useActiveChainConfig();
@@ -638,12 +755,19 @@ function OwnedPlotRow({
         >
           Show on Board
         </ActionButton>
-        <ActionButton
-          active={action === "image"}
-          onClick={() => setAction(action === "image" ? "none" : "image")}
-        >
-          {plot?.imageUri ? "Update Image" : "Upload Image"}
-        </ActionButton>
+        {event ? (
+          <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-base-blue">
+            This pixel is part of a community event — its colour is revealed
+            automatically when bought. Image updates are locked in this region.
+          </p>
+        ) : (
+          <ActionButton
+            active={action === "image"}
+            onClick={() => setAction(action === "image" ? "none" : "image")}
+          >
+            {plot?.imageUri ? "Update Image" : "Upload Image"}
+          </ActionButton>
+        )}
       </div>
 
       {action === "image" && (
@@ -701,6 +825,16 @@ function MultiImagePanel({
       y2: Math.max(...pts.map((p) => p.y)),
     };
   }, [selected]);
+
+  // Event regions don't allow third-party artwork — refuse the batch.
+  const eventLocked = useMemo(
+    () =>
+      selected.some((id) => {
+        const { x, y } = xyFromPlotId(id);
+        return getEventForCell(x, y) != null;
+      }),
+    [selected],
+  );
 
   const plotsW = zone.x2 - zone.x1 + 1;
   const plotsH = zone.y2 - zone.y1 + 1;
@@ -767,13 +901,20 @@ function MultiImagePanel({
         {selected.length} pixel{selected.length === 1 ? "" : "s"} selected ·{" "}
         {plotsW}×{plotsH} area
       </p>
-      <ImageUploader
-        busy={busy}
-        onSave={onApply}
-        saveLabel="Apply to selection"
-        aspect={plotsW / plotsH}
-        maxDim={dimForPlots(plotsW, plotsH)}
-      />
+      {eventLocked ? (
+        <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-base-blue">
+          Some of these pixels sit inside a community event region, where
+          image uploads are locked. Deselect those pixels to continue.
+        </p>
+      ) : (
+        <ImageUploader
+          busy={busy}
+          onSave={onApply}
+          saveLabel="Apply to selection"
+          aspect={plotsW / plotsH}
+          maxDim={dimForPlots(plotsW, plotsH)}
+        />
+      )}
     </div>
   );
 }
@@ -811,6 +952,16 @@ function LargeClusterRow({
   const anchorId = Math.min(...cluster);
   const bboxW = bbox.x2 - bbox.x1 + 1;
   const bboxH = bbox.y2 - bbox.y1 + 1;
+
+  // Event regions don't allow third-party artwork — refuse the whole block.
+  const eventLocked = useMemo(
+    () =>
+      cluster.some((id) => {
+        const { x, y } = xyFromPlotId(id);
+        return getEventForCell(x, y) != null;
+      }),
+    [cluster],
+  );
 
   useEffect(() => {
     if (isSuccess && pendingLabel) {
@@ -988,16 +1139,23 @@ function LargeClusterRow({
         >
           Show on Board
         </ActionButton>
-        <ActionButton
-          active={action === "image"}
-          onClick={() => {
-            setAction(action === "image" ? "none" : "image");
-            setSplitMode(false);
-            setSplitConfig(null);
-          }}
-        >
-          {anchorPlot?.imageUri ? "Update Image" : "Upload Image"}
-        </ActionButton>
+        {eventLocked ? (
+          <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-medium text-base-blue">
+            This block includes part of a community event region, where
+            image uploads are locked.
+          </p>
+        ) : (
+          <ActionButton
+            active={action === "image"}
+            onClick={() => {
+              setAction(action === "image" ? "none" : "image");
+              setSplitMode(false);
+              setSplitConfig(null);
+            }}
+          >
+            {anchorPlot?.imageUri ? "Update Image" : "Upload Image"}
+          </ActionButton>
+        )}
       </div>
 
       {action === "image" && (

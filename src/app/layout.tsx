@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 const SITE_TITLE = "BaseBoard · 9,998,244 pixels on Base";
 const SITE_DESCRIPTION =
-  "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.";
+  "Buy a pixel and draw on a 9,998,244-pixel community board on Base Mainnet.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(APP_URL),

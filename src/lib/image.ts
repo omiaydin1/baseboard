@@ -217,18 +217,26 @@ function encode(
  * Compress an uploaded image to a small data URI suitable for on-chain storage.
  * Tries decreasing quality, then decreasing dimensions, keeping the smallest
  * result. Always resolves; check `tooLarge` to know if it still won't fit.
+ *
+ * `targetBytes` overrides the byte budget the compressor squeezes under and
+ * `hardCapBytes` defines what counts as `tooLarge` — used by the event image
+ * flow, which stores images in Turso (no on-chain gas cost) and can therefore
+ * afford a much larger payload than plot artwork.
  */
 export async function compressImageFile(
   file: File,
-  opts: { aspect?: number; maxDim?: number } = {},
+  opts: { aspect?: number; maxDim?: number; targetBytes?: number; hardCapBytes?: number } = {},
 ): Promise<CompressResult> {
   const decoded = await decodeDownsampled(file);
   try {
     const mime = supportsWebp() ? "image/webp" : "image/jpeg";
-    const { maxDim } = opts;
-    // Step dimensions / quality down until the data URI fits the on-chain budget
-    // (~10 KB target). The ladder starts at the resolution the *selected plots*
-    // actually need (so a 1×1 plot encodes tiny) and only shrinks from there.
+    const { maxDim, targetBytes, hardCapBytes } = opts;
+    const budget = targetBytes ?? TARGET_BYTES;
+    const hardCap = hardCapBytes ?? MAX_ONCHAIN_IMAGE_BYTES;
+    // Step dimensions / quality down until the data URI fits the byte budget
+    // (~10 KB target for on-chain images; much larger for events). The ladder
+    // starts at the resolution the *selected plots* actually need (so a 1×1
+    // plot encodes tiny) and only shrinks from there.
     const dims = dimLadder(maxDim ?? 512);
     // Try high quality first at each size so we keep the crispest encode that
     // still fits the (now near-maximal) byte budget.
@@ -246,7 +254,7 @@ export async function compressImageFile(
         if (!smallest || out.dataUri.length < smallest.dataUri.length) {
           smallest = out;
         }
-        if (out.dataUri.length <= TARGET_BYTES) {
+        if (out.dataUri.length <= budget) {
           return {
             dataUri: out.dataUri,
             bytes: out.dataUri.length,
@@ -264,7 +272,7 @@ export async function compressImageFile(
       bytes: best.dataUri.length,
       width: best.width,
       height: best.height,
-      tooLarge: best.dataUri.length > MAX_ONCHAIN_IMAGE_BYTES,
+      tooLarge: best.dataUri.length > hardCap,
     };
   } finally {
     // Release the decoded bitmap immediately after baking the data URI.

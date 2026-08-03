@@ -54,7 +54,7 @@ export function GET(req: Request) {
       name: "BaseBoard",
       subtitle: "9,998,244 pixels on Base",
       description:
-        "Buy, sell, trade and draw on a 9,998,244-pixel board on Base Mainnet.",
+        "Buy a pixel and draw on a 9,998,244-pixel community board on Base Mainnet.",
       iconUrl: `${url}/icon.png${ICON_CACHE_BUST}`,
       homeUrl: url,
       imageUrl: `${url}/og.png`,

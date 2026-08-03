@@ -9,10 +9,12 @@ import {
 } from "react";
 import { usePublicClient, useAccount, useChainId, useWatchContractEvent } from "wagmi";
 import { baseBoardAbi, readContractWithTimeout } from "@/lib/contract";
-import { GRID_SIZE, ZERO_ADDRESS } from "@/lib/constants";
+import { GRID_SIZE, MAX_EVENT_AREA, ZERO_ADDRESS } from "@/lib/constants";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { clamp, plotIdFromXY, xyFromPlotId } from "@/lib/coords";
 import { parseZone, stripZone } from "@/lib/image";
+import { getEventForCell, getEvents, loadEvents, subscribeEvents } from "@/lib/eventReveals";
+import type { EventReveal } from "@/lib/event";
 import {
   DENSITY_ALPHA_CAP,
   DENSITY_BUCKETS,
@@ -50,6 +52,12 @@ const MIN_ICON_PX = 4;
 const MAX_ICON_PX = 20;
 const IMAGE_CACHE_MAX = 200; // max entries in imageCacheRef before LRU eviction
 const LOD_CACHE_MAX = 200;   // max entries in lodCacheRef before LRU eviction
+// Longest side cap for baked event canvases (colour + grayscale twins).
+const EVENT_BAKE_MAX_DIM = 2048;
+// Longest side cap for the event reveal scratch layer. The layer is only an
+// intermediate for the destination-in mask clip, and event sources are
+// ~2px/cell, so capping it keeps deep-zoom memory bounded (~4 MB max).
+const EVENT_LAYER_MAX_DIM = 1024;
 const DRAG_THRESHOLD = 4; // px movement before a press counts as a drag
 const STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 const BOARD_CACHE_KEY = "baseboard:board-data";
@@ -143,6 +151,11 @@ export function BaseBoardCanvas() {
       optimisticPlots: s.optimisticPlots,
       clearOptimisticPlots: s.clearOptimisticPlots,
       densityEnabled: s.densityEnabled,
+      eventCreateMode: s.eventCreateMode,
+      setEventCreateMode: s.setEventCreateMode,
+      setEventDraft: s.setEventDraft,
+      setEventDrawerOpen: s.setEventDrawerOpen,
+      pushToast: s.pushToast,
     })),
   );
   const {
@@ -162,6 +175,11 @@ export function BaseBoardCanvas() {
     optimisticPlots,
     clearOptimisticPlots,
     densityEnabled,
+    eventCreateMode,
+    setEventCreateMode,
+    setEventDraft,
+    setEventDrawerOpen,
+    pushToast,
   } = store;
 
   const [tool, setTool] = useState<Tool>("pan");
@@ -181,11 +199,38 @@ export function BaseBoardCanvas() {
   // paths can read them without re-subscribing every frame.
   const selectModeRef = useRef(selectMode);
   selectModeRef.current = selectMode;
+  const eventCreateModeRef = useRef(eventCreateMode);
+  eventCreateModeRef.current = eventCreateMode;
   const basketSetRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     basketSetRef.current = new Set(basket);
     dirtyRef.current = true;
   }, [basket]);
+
+  // Event-creation flow: entering create mode switches to the Select tool so
+  // the user can frame their region immediately.
+  useEffect(() => {
+    if (eventCreateMode) setTool("select");
+  }, [eventCreateMode]);
+
+  // When the event list changes (a new event was published / link edited),
+  // force a redraw and rebuild reveal masks so the new region renders
+  // immediately. Event image assets bake lazily through their own onload.
+  const subscribeToEvents = useCallback(() => {
+    return subscribeEvents(() => {
+      eventMaskDirtyRef.current = true;
+      dirtyRef.current = true;
+      forceTick((t) => t + 1);
+    });
+  }, []);
+
+  // Load created events on mount and re-render (and rebake masks) whenever
+  // the list changes — e.g. right after a new event is published.
+  useEffect(() => {
+    void loadEvents();
+    return subscribeToEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const pointerRef = useRef({
     down: false,
@@ -255,6 +300,22 @@ export function BaseBoardCanvas() {
   // and LOD caches use this to protect on-screen images from LRU eviction so
   // panning back never shows a flash while the image re-decodes.
   const visibleImageUrisRef = useRef<Set<string>>(new Set());
+
+  // Event reveal state. Per event id: baked colour + grayscale twin
+  // canvases, the source image element, and the owned-cell reveal mask.
+  // The mask is rebuilt whenever plot data changes (same signal as the
+  // contiguous-block rebuild). The scratch layer composites the colour reveal
+  // before it is blitted, so the `destination-in` mask clip never touches the
+  // board buffer (which would erase the ghost behind it).
+  const eventAssetsRef = useRef<
+    Map<string, { color: HTMLCanvasElement; gray: HTMLCanvasElement }>
+  >(new Map());
+  const eventImageRef = useRef<Map<string, HTMLImageElement | "error">>(
+    new Map(),
+  );
+  const eventMaskRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  const eventMaskDirtyRef = useRef(true);
+  const eventLayerRef = useRef<HTMLCanvasElement | null>(null);
   const [, forceTick] = useState(0);
   const requestRedraw = useCallback(() => {
     dirtyRef.current = true;
@@ -429,8 +490,12 @@ export function BaseBoardCanvas() {
     const { width, height, dpr } = sizeRef.current;
     const cam = cameraRef.current;
 
-    // Rebuild contiguous-block membership when plot data has changed.
-    if (plotBlockDirtyRef.current) computePlotBlocks();
+    // Rebuild contiguous-block membership when plot data has changed. The
+    // event reveal masks are rebuilt on the same signal.
+    if (plotBlockDirtyRef.current) {
+      computePlotBlocks();
+      eventMaskDirtyRef.current = true;
+    }
 
     // ----------------------------------------------------------------
     // Phase 1: Composite the static board layer onto the offscreen
@@ -474,6 +539,23 @@ export function BaseBoardCanvas() {
     offCtx.fillStyle = "#f8fbff";
     offCtx.fillRect(boardLeft, boardTop, boardSize, boardSize);
 
+    // ---- Event ghost layer (grayscale preview over unowned regions) ----
+    // Drawn BEFORE owned plots so bought cells (fills, user art, reveal) sit on
+    // top of the ghost instead of being hidden underneath it.
+    drawEventGhost(
+      offCtx,
+      cam,
+      startX,
+      startY,
+      endX,
+      endY,
+      cellToScreenX,
+      cellToScreenY,
+      boardLeft,
+      boardTop,
+      boardSize,
+    );
+
     // ---- Owned plots + stretched images (grouped by owner+uri) ----
     offCtx.save();
     offCtx.beginPath();
@@ -481,6 +563,22 @@ export function BaseBoardCanvas() {
     offCtx.clip();
     drawPlots(offCtx, cam, startX, startY, endX, endY, cellToScreenX, cellToScreenY);
     offCtx.restore();
+
+    // ---- Event reveal (coloured pixels for owned cells) ----
+    drawEventReveal(
+      offCtx,
+      cam,
+      startX,
+      startY,
+      endX,
+      endY,
+      cellToScreenX,
+      cellToScreenY,
+      boardLeft,
+      boardTop,
+      boardSize,
+      dpr,
+    );
 
     // ---- Purchase-density overlay ----
     const densityField = densityCanvasRef.current;
@@ -583,6 +681,18 @@ export function BaseBoardCanvas() {
       offCtx.stroke();
       offCtx.restore();
     }
+
+    // ---- Event region outline (thin, subtle frame) ----
+    drawEventOutline(
+      offCtx,
+      cam,
+      startX,
+      startY,
+      endX,
+      endY,
+      cellToScreenX,
+      cellToScreenY,
+    );
 
     // ---- Basket (tap-to-add multi-select) on the board layer ----
     const basketIds = basketSetRef.current;
@@ -805,6 +915,12 @@ export function BaseBoardCanvas() {
         // made perimeter images vanish during pan/zoom. We cull whole groups at
         // draw time by their span bbox instead.
         if (plot.imageUri) {
+          // Event regions: hide any artwork that isn't the event's own
+          // image — bought cells there may only ever show the reveal colour.
+          const eventRegion = getEventForCell(x, y);
+          if (eventRegion && stripZone(plot.imageUri) !== eventRegion.imagePath) {
+            return;
+          }
           // Key on owner + image *content* (zone fragment stripped) so the SAME
           // artwork applied across separately-purchased adjacent batches stitches
           // into one unified billboard instead of fragmenting per batch.
@@ -1017,6 +1133,269 @@ export function BaseBoardCanvas() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [address],
+  );
+
+  // -------------------------------------------------------------------
+  // Event reveal layers (grayscale ghost + owned-cell colour reveal)
+  // -------------------------------------------------------------------
+
+  /** Load (and cache) a event image; returns null until decoded. */
+  const loadEventImage = useCallback((path: string) => {
+    const cache = eventImageRef.current;
+    let img = cache.get(path);
+    if (!img) {
+      img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        dirtyRef.current = true;
+      };
+      img.onerror = () => {
+        cache.set(path, "error");
+        dirtyRef.current = true;
+      };
+      img.src = path;
+      cache.set(path, img);
+    }
+    return img === "error" ? null : img;
+  }, []);
+
+  /**
+   * Bake (once, per event) the full-colour canvas and its grayscale twin.
+   * Same-origin /public assets never taint the canvas, so per-pixel reads work.
+   */
+  const getEventAssets = useCallback(
+    (c: EventReveal) => {
+      const cached = eventAssetsRef.current.get(c.id);
+      if (cached) return cached;
+
+      const img = loadEventImage(c.imagePath);
+      if (!img || !img.complete || img.naturalWidth === 0) return null;
+
+      const iw = img.naturalWidth;
+      const ih = img.naturalHeight;
+      const ratio = Math.min(1, EVENT_BAKE_MAX_DIM / Math.max(iw, ih));
+      const cw = Math.max(1, Math.round(iw * ratio));
+      const ch = Math.max(1, Math.round(ih * ratio));
+
+      const color = document.createElement("canvas");
+      color.width = cw;
+      color.height = ch;
+      const cctx = color.getContext("2d", { willReadFrequently: true });
+      if (!cctx) return null;
+      cctx.drawImage(img, 0, 0, iw, ih, 0, 0, cw, ch);
+
+      const gray = document.createElement("canvas");
+      gray.width = cw;
+      gray.height = ch;
+      const gctx = gray.getContext("2d");
+      if (!gctx) return null;
+      gctx.drawImage(color, 0, 0);
+      try {
+        const id = gctx.getImageData(0, 0, cw, ch);
+        const d = id.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const luma = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+          d[i] = d[i + 1] = d[i + 2] = luma;
+        }
+        gctx.putImageData(id, 0, 0);
+      } catch {
+        // Tainted canvas (unexpected for same-origin assets) — keep the colour
+        // copy so the ghost still has something to draw.
+      }
+
+      const entry = { color, gray };
+      eventAssetsRef.current.set(c.id, entry);
+      return entry;
+    },
+    [loadEventImage],
+  );
+
+  /**
+   * Rebuild (when plot data changed) the per-event reveal mask: a
+   * cell-sized canvas that is opaque white for every owned plot in the region
+   * and transparent elsewhere. Combined with `destination-in` this clips the
+   * colour layer to exactly the bought cells — the "colour reveal".
+   */
+  const getEventMask = useCallback((c: EventReveal) => {
+    let mask = eventMaskRef.current.get(c.id);
+    if (mask && !eventMaskDirtyRef.current) return mask;
+    if (!mask) {
+      mask = document.createElement("canvas");
+      mask.width = c.x2 - c.x1 + 1;
+      mask.height = c.y2 - c.y1 + 1;
+      eventMaskRef.current.set(c.id, mask);
+    }
+    const mctx = mask.getContext("2d");
+    if (!mctx) return mask;
+    mctx.clearRect(0, 0, mask.width, mask.height);
+    const map = plotMapRef.current;
+    mctx.fillStyle = "#ffffff";
+    for (let y = c.y1; y <= c.y2; y++) {
+      for (let x = c.x1; x <= c.x2; x++) {
+        const plot = map.get(plotIdFromXY(x, y));
+        if (plot && plot.owner.toLowerCase() !== ZERO_ADDRESS) {
+          mctx.fillRect(x - c.x1, y - c.y1, 1, 1);
+        }
+      }
+    }
+    eventMaskDirtyRef.current = false;
+    return mask;
+  }, []);
+
+  /** Draw the grayscale ghost layer for every event in the viewport. */
+  const drawEventGhost = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      cam: Camera,
+      startX: number,
+      startY: number,
+      endX: number,
+      endY: number,
+      cellToScreenX: (c: number) => number,
+      cellToScreenY: (c: number) => number,
+      boardLeft: number,
+      boardTop: number,
+      boardSize: number,
+    ) => {
+      for (const c of getEvents()) {
+        if (
+          c.x2 < startX - 1 ||
+          c.x1 > endX + 1 ||
+          c.y2 < startY - 1 ||
+          c.y1 > endY + 1
+        )
+          continue;
+        const assets = getEventAssets(c);
+        if (!assets) continue;
+        const dx = Math.floor(cellToScreenX(c.x1));
+        const dy = Math.floor(cellToScreenY(c.y1));
+        const w = Math.ceil((c.x2 - c.x1 + 1) * cam.scale);
+        const h = Math.ceil((c.y2 - c.y1 + 1) * cam.scale);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(boardLeft, boardTop, boardSize, boardSize);
+        ctx.clip();
+        ctx.globalAlpha = c.ghostAlpha;
+        ctx.drawImage(assets.gray, dx, dy, w, h);
+        ctx.restore();
+      }
+    },
+    [getEventAssets],
+  );
+
+  /** Draw the coloured reveal for owned cells inside each event region. */
+  const drawEventReveal = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      cam: Camera,
+      startX: number,
+      startY: number,
+      endX: number,
+      endY: number,
+      cellToScreenX: (c: number) => number,
+      cellToScreenY: (c: number) => number,
+      boardLeft: number,
+      boardTop: number,
+      boardSize: number,
+      dpr: number,
+    ) => {
+      for (const c of getEvents()) {
+        if (
+          c.x2 < startX - 1 ||
+          c.x1 > endX + 1 ||
+          c.y2 < startY - 1 ||
+          c.y1 > endY + 1
+        )
+          continue;
+        const assets = getEventAssets(c);
+        if (!assets) continue;
+        const mask = getEventMask(c);
+        if (!mask) continue;
+
+        const dx = Math.floor(cellToScreenX(c.x1));
+        const dy = Math.floor(cellToScreenY(c.y1));
+        const w = Math.ceil((c.x2 - c.x1 + 1) * cam.scale);
+        const h = Math.ceil((c.y2 - c.y1 + 1) * cam.scale);
+        if (w <= 0 || h <= 0) continue;
+
+        // The scratch layer is resolution-capped so deep zoom (scale 48 →
+        // ~9600px region) can't allocate a multi-gigabyte canvas; event
+        // sources are ~2px/cell anyway, so nothing sharp is lost.
+        const layerScale = Math.min(1, EVENT_LAYER_MAX_DIM / Math.max(w, h));
+        const lw = Math.max(1, Math.round(w * layerScale));
+        const lh = Math.max(1, Math.round(h * layerScale));
+
+        let layer = eventLayerRef.current;
+        if (!layer) {
+          layer = document.createElement("canvas");
+          eventLayerRef.current = layer;
+        }
+        if (layer.width !== lw || layer.height !== lh) {
+          layer.width = lw;
+          layer.height = lh;
+        }
+        const lctx = layer.getContext("2d");
+        if (!lctx) continue;
+        lctx.setTransform(1, 0, 0, 1, 0, 0);
+        lctx.clearRect(0, 0, lw, lh);
+        lctx.imageSmoothingEnabled = true;
+        lctx.imageSmoothingQuality = "high";
+        lctx.drawImage(assets.color, 0, 0, lw, lh);
+        // Clip the colour layer to exactly the bought cells (white = owned).
+        // Smoothing is off so cell boundaries stay pixel-exact.
+        lctx.globalCompositeOperation = "destination-in";
+        lctx.imageSmoothingEnabled = false;
+        lctx.drawImage(mask, 0, 0, lw, lh);
+        lctx.globalCompositeOperation = "source-over";
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(boardLeft, boardTop, boardSize, boardSize);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(layer, dx, dy, w, h);
+        ctx.restore();
+      }
+    },
+    [getEventAssets, getEventMask],
+  );
+
+  /** Draw a thin, subtle frame around each event region. */
+  const drawEventOutline = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      cam: Camera,
+      startX: number,
+      startY: number,
+      endX: number,
+      endY: number,
+      cellToScreenX: (c: number) => number,
+      cellToScreenY: (c: number) => number,
+    ) => {
+      for (const c of getEvents()) {
+        if (
+          c.x2 < startX - 1 ||
+          c.x1 > endX + 1 ||
+          c.y2 < startY - 1 ||
+          c.y1 > endY + 1
+        )
+          continue;
+        const dx = cellToScreenX(c.x1);
+        const dy = cellToScreenY(c.y1);
+        const w = (c.x2 - c.x1 + 1) * cam.scale;
+        const h = (c.y2 - c.y1 + 1) * cam.scale;
+
+        ctx.save();
+        ctx.strokeStyle = c.outlineColor;
+        ctx.globalAlpha = 0.65;
+        ctx.lineWidth = Math.max(1, Math.min(2, cam.scale * 0.05));
+        ctx.strokeRect(dx + 0.5, dy + 0.5, w - 1, h - 1);
+        ctx.restore();
+      }
+    },
+    [],
   );
 
   const getImage = useCallback(
@@ -1583,6 +1962,11 @@ export function BaseBoardCanvas() {
     imageRetryRef.current.clear();
     lodCacheRef.current.clear();
     visibleImageUrisRef.current.clear();
+    eventAssetsRef.current.clear();
+    eventImageRef.current.clear();
+    eventMaskRef.current.clear();
+    eventMaskDirtyRef.current = true;
+    eventLayerRef.current = null;
     clearOptimisticPlots();
     dirtyRef.current = true;
   }, [chainId, clearOptimisticPlots]);
@@ -1711,6 +2095,48 @@ export function BaseBoardCanvas() {
     return { sx: e.clientX - rect.left, sy: e.clientY - rect.top };
   }, []);
 
+  /** True when any owned plot sits inside the given box. */
+  const hasOwnedPlotsInBox = useCallback(
+    (x1: number, y1: number, x2: number, y2: number): boolean => {
+      const map = plotMapRef.current;
+      for (const id of map.keys()) {
+        const { x, y } = xyFromPlotId(id);
+        if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return true;
+      }
+      return false;
+    },
+    [],
+  );
+
+  /**
+   * Event-creation selection completed: validate the region (size cap, fully
+   * unowned) and hand it to the drawer's create form. Rejects with a toast
+   * instead of accepting, so the user stays in create mode and re-selects.
+   */
+  const acceptEventDraft = useCallback(
+    (x1: number, y1: number, x2: number, y2: number) => {
+      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
+      if (area > MAX_EVENT_AREA) {
+        pushToast(
+          "error",
+          `Event area is too large — max ${MAX_EVENT_AREA.toLocaleString()} pixels (${x2 - x1 + 1}×${y2 - y1 + 1}).`,
+        );
+        return;
+      }
+      if (hasOwnedPlotsInBox(x1, y1, x2, y2)) {
+        pushToast(
+          "error",
+          "This area contains purchased pixels — events need an empty region. Try another area.",
+        );
+        return;
+      }
+      setEventDraft({ x1, y1, x2, y2 });
+      setEventCreateMode(false);
+      setEventDrawerOpen(true);
+    },
+    [hasOwnedPlotsInBox, pushToast, setEventCreateMode, setEventDraft, setEventDrawerOpen],
+  );
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       // Touch input is handled exclusively by the native touch listeners below
@@ -1819,7 +2245,11 @@ export function BaseBoardCanvas() {
         const y1 = clamp(Math.min(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
         const x2 = clamp(Math.max(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
         const y2 = clamp(Math.max(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
-        setBuySelection({ x1, y1, x2, y2 });
+        if (eventCreateModeRef.current) {
+          acceptEventDraft(x1, y1, x2, y2);
+        } else {
+          setBuySelection({ x1, y1, x2, y2 });
+        }
       }
 
       p.dragging = false;
@@ -1828,11 +2258,16 @@ export function BaseBoardCanvas() {
       dirtyRef.current = true;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [getLocal, screenToCell, setBuySelection],
+    [getLocal, screenToCell, setBuySelection, acceptEventDraft],
   );
 
   const handleSingleSelect = useCallback(
     (x: number, y: number) => {
+      // Event-creation mode: a click frames a 1×1 event region.
+      if (eventCreateModeRef.current) {
+        acceptEventDraft(x, y, x, y);
+        return;
+      }
       const id = plotIdFromXY(x, y);
       const plot = plotMapRef.current.get(id);
       const owned = !!plot && plot.owner.toLowerCase() !== ZERO_ADDRESS;
@@ -1853,7 +2288,7 @@ export function BaseBoardCanvas() {
         setBuySelection({ x1: x, y1: y, x2: x, y2: y }); // empty -> buy
       }
     },
-    [openPlot, setBuySelection, toggleBasketPlot],
+    [acceptEventDraft, openPlot, setBuySelection, toggleBasketPlot],
   );
 
   // -------------------------------------------------------------------
@@ -1987,7 +2422,11 @@ export function BaseBoardCanvas() {
           const y1 = clamp(Math.min(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
           const x2 = clamp(Math.max(p.startCell.x, p.curCell.x), 0, GRID_SIZE - 1);
           const y2 = clamp(Math.max(p.startCell.y, p.curCell.y), 0, GRID_SIZE - 1);
-          setBuySelection({ x1, y1, x2, y2 });
+          if (eventCreateModeRef.current) {
+            acceptEventDraft(x1, y1, x2, y2);
+          } else {
+            setBuySelection({ x1, y1, x2, y2 });
+          }
         } else if (!t.multiTouch && !t.moved) {
           // Clean, intentional single-finger tap.
           const cell = screenToCell(t.lastX, t.lastY);
@@ -2027,6 +2466,7 @@ export function BaseBoardCanvas() {
     handleSingleSelect,
     screenToCell,
     setBuySelection,
+    acceptEventDraft,
   ]);
 
   // -------------------------------------------------------------------
@@ -2174,6 +2614,21 @@ export function BaseBoardCanvas() {
             className="rounded-lg border-2 border-base-blue px-2.5 py-1.5 text-sm font-semibold text-base-blue disabled:opacity-40"
           >
             Clear
+          </button>
+        </div>
+      )}
+      {/* Event-creation hint bar (active while framing the region) */}
+      {eventCreateMode && (
+        <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-2xl border-2 border-base-blue bg-white px-3 py-2 shadow-lg">
+          <span className="whitespace-nowrap text-sm font-bold text-base-blue">
+            ✏️ Draw your event area with the Select tool
+          </span>
+          <button
+            type="button"
+            onClick={() => setEventCreateMode(false)}
+            className="rounded-lg border-2 border-base-blue px-2.5 py-1.5 text-sm font-semibold text-base-blue hover:bg-blue-50"
+          >
+            Cancel
           </button>
         </div>
       )}

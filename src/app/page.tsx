@@ -9,6 +9,7 @@ import { WalletConnect } from "@/components/WalletConnect";
 import { NetworkGuard } from "@/components/NetworkGuard";
 import { ProfileDrawer } from "@/components/ProfileDrawer";
 import { LeaderboardDrawer } from "@/components/LeaderboardDrawer";
+import { EventDrawer } from "@/components/EventDrawer";
 import { NetworkSelector } from "@/components/NetworkSelector";
 import { PlotModal } from "@/components/PlotModal";
 import { BuyModal } from "@/components/BuyModal";
@@ -20,6 +21,7 @@ import { AllMintedProvider } from "@/hooks/useAllMintedContext";
 import { useBoardStore } from "@/store/useBoardStore";
 import { useActiveChainConfig } from "@/hooks/useActiveContract";
 import { GRID_SIZE } from "@/lib/constants";
+import { getEvents, loadEvents, subscribeEvents } from "@/lib/eventReveals";
 
 /** Person silhouette icon preceding "My Profile". */
 function ProfileIcon() {
@@ -51,11 +53,30 @@ function TrophyIcon() {
   );
 }
 
+/** Palette icon preceding "Event", matching the other header icons. */
+function PaletteIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.7 1.5-1.5 0-.4-.2-.7-.4-.9-.3-.3-.4-.6-.4-.9 0-.8.7-1.4 1.5-1.4h1.5A4.4 4.4 0 0 0 20 12.4C20 7.2 16.4 3 12 3Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="10" r="1.2" fill="currentColor" />
+      <circle cx="12" cy="7.5" r="1.2" fill="currentColor" />
+      <circle cx="16" cy="10" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
 export default function Home() {
   const toggleProfile = useBoardStore((s) => s.toggleProfile);
   const toggleLeaderboard = useBoardStore((s) => s.toggleLeaderboard);
+  const toggleEventDrawer = useBoardStore((s) => s.toggleEventDrawer);
   const openPlot = useBoardStore((s) => s.openPlot);
   const setFocusPlotId = useBoardStore((s) => s.setFocusPlotId);
+  const setFocusBounds = useBoardStore((s) => s.setFocusBounds);
   const cfg = useActiveChainConfig();
 
   // Deep link: `?pixel=<id>` auto-opens the existing Pixel Details modal for
@@ -70,6 +91,31 @@ export default function Home() {
     openPlot(id);
     setFocusPlotId(id);
   }, [openPlot, setFocusPlotId]);
+
+  // Deep link: `?event=<id>` (shared from the creator's profile) flies the
+  // camera to the event region once it is known — seed events resolve
+  // immediately, DB events once GET /api/events lands.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = new URLSearchParams(window.location.search).get("event");
+    if (raw == null) return;
+    const tryFocus = () => {
+      const ev = getEvents().find((c) => c.id === raw);
+      if (!ev) return false;
+      setFocusBounds({ x1: ev.x1, y1: ev.y1, x2: ev.x2, y2: ev.y2 });
+      return true;
+    };
+    if (tryFocus()) return;
+    const unsubscribe = subscribeEvents(() => {
+      if (tryFocus()) unsubscribe();
+    });
+    void loadEvents();
+    const timer = setTimeout(() => unsubscribe(), 8000);
+    return () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
+  }, [setFocusBounds]);
 
   return (
     <AllMintedProvider>
@@ -98,6 +144,14 @@ export default function Home() {
             >
               <TrophyIcon />
               Leaderboard
+            </button>
+            <button
+              type="button"
+              onClick={toggleEventDrawer}
+              className="inline-flex items-center gap-1.5 rounded-xl border-2 border-base-blue px-3 py-2 text-sm font-semibold text-base-blue hover:bg-blue-50 sm:px-4"
+            >
+              <PaletteIcon />
+              Event
             </button>
             <NetworkSelector />
             <WalletConnect />
@@ -144,6 +198,7 @@ export default function Home() {
       {/* Overlays */}
       <ProfileDrawer />
       <LeaderboardDrawer />
+      <EventDrawer />
       <PlotModal />
       <BuyModal />
       <Toaster />
